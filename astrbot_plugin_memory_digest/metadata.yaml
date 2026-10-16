@@ -1,0 +1,4 @@
+name: astrbot_plugin_memory_digest
+desc: 把对话提炼成 bot 的第一人称长期记忆写进知识库：三层分类（状态/偏好/事件）+ 置信度 + 余弦去重 + 来源校验
+author: Lansheen3096
+version: 0.1.0

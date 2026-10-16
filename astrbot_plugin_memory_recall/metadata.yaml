@@ -1,0 +1,4 @@
+name: astrbot_plugin_memory_recall
+desc: 接管记忆注入：状态层全量、偏好/事件层过「地板 + 领先」闸门，事件按半衰期时间递减
+author: Lansheen3096
+version: 0.1.0
