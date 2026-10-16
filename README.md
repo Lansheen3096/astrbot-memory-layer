@@ -206,16 +206,16 @@ tools/
 
 ```bash
 cd tools
-./review.sh list [--all | --sid 0063 | --kind event]   # 只读
+./review.sh list [--all | --sid 0001 | --kind event]   # 只读
 ./review.sh stats                                      # 只读，含三处一致性核对
-./review.sh keep    0063 0064     # 转 ok + 清掉 suspect
-./review.sh suspect 0070          # 标记存疑
-./review.sh delete  0065 [--yes]  # 删除（doc.db / FTS / faiss 三处一起动）
+./review.sh keep    0001 0002     # 转 ok + 清掉 suspect
+./review.sh suspect 0003          # 标记存疑
+./review.sh delete  0004 [--yes]  # 删除（doc.db / FTS / faiss 三处一起动）
 ./review.sh batch  < plan.json    # 一批一次做完，只停起一次容器
 ```
 
 ⚠️ **多个 sid 用空格分隔，不是逗号**（每个 sid 是独立的参数）。sid 是 4 位零填充的字符串、
-精确匹配 —— `63` 匹配不上 `0063`。
+精确匹配 —— `1` 匹配不上 `0001`。
 
 ### 为什么写操作要停容器
 
