@@ -47,7 +47,9 @@ ANCHOR_RE = re.compile(r"^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2})\]\s*(.*)$", re.S)
 ANCHOR_STRIP_RE = re.compile(r"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}\]\s*")
 SPLIT_RE = re.compile(r"[。！？!?\n]+")
 
-DAILY_HOUR = 5  # 每天几点自动整理（容器时区 = Asia/Shanghai）
+# 每天几点自动整理（容器时区 = Asia/Shanghai）。按你自己的作息挑一个不常聊天的时段 ——
+# 整理要跑一次 LLM 调用，落在这个点上会占掉一个模型请求。
+DAILY_HOUR = 5
 DAILY_MINUTE = 0
 
 MAX_CHARS_PER_RUN = 12000
