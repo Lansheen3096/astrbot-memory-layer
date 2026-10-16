@@ -1,11 +1,12 @@
 # astrbot-memory-layer
 
-两个把「长期记忆」拆成**三层**来做的 AstrBot 插件：**写入（提炼）→ 注入（召回）**。
+一条**完整的长期记忆管线**：**写入（提炼）→ 注入（召回）→ 复核（人审）**。
 
-| 插件 | 作用 |
+| 组件 | 作用 |
 |---|---|
 | [`astrbot_plugin_memory_digest`](astrbot_plugin_memory_digest) | 把对话提炼成 bot 的第一人称记忆写进知识库 |
 | [`astrbot_plugin_memory_recall`](astrbot_plugin_memory_recall) | 接管记忆注入：状态层全量、偏好/事件层过闸门、事件按时间递减 |
+| [`tools/`](tools) | 复核台：命令行 + 本地 WebUI，用来清掉待审条目和存疑条目 |
 
 在 AstrBot v4.28.x 上跑出来的，用的是框架自带的知识库（embedding + FAISS）
 和一个 rerank provider。**两个插件必须一起装**，`KB_NAME` 常量也要一致。
@@ -181,6 +182,93 @@ rerank 分衡量的是「这条记忆是否真的答上了这句话」，它的�
 整块挂在 `req.extra_user_content_parts` 上并 `mark_as_temp()` —— **临时注入，
 不写进历史**，否则下一轮它会被当成用户说过的话再检索一次，越滚越脏。
 总长有 `MAX_CHARS` 上限。
+
+---
+
+## 3. tools/ —— 复核台
+
+**没有它，前面两个插件会留一个永远清不掉的队列。**
+`memory_digest` 写库时把新条目标成 `status="new"`，`memory_recall` 见到就打 0.5 折；
+来源对不上的条目会标 `suspect=1`，`memory_recall` 见到直接不注入。两处都要人过目才能清，
+这个工具就是那个「过目」的入口。
+
+跑在**宿主机**上（不是容器里），零第三方依赖，纯 stdlib。
+
+```
+tools/
+  review.py     真正干活的：读/写知识库，走框架自己的 vec_db 接口
+  review.sh     包装层：读操作在跑着的容器里执行；写操作先停容器再改
+  webui.py      本地网页，给 CLI 套一个能点的界面
+  selftest.sh   在知识库【副本】上验一遍读改写全流程
+```
+
+### 命令行
+
+```bash
+cd tools
+./review.sh list [--all | --sid 0063 | --kind event]   # 只读
+./review.sh stats                                      # 只读，含三处一致性核对
+./review.sh keep    0063 0064     # 转 ok + 清掉 suspect
+./review.sh suspect 0070          # 标记存疑
+./review.sh delete  0065 [--yes]  # 删除（doc.db / FTS / faiss 三处一起动）
+./review.sh batch  < plan.json    # 一批一次做完，只停起一次容器
+```
+
+⚠️ **多个 sid 用空格分隔，不是逗号**（每个 sid 是独立的参数）。sid 是 4 位零填充的字符串、
+精确匹配 —— `63` 匹配不上 `0063`。
+
+### 为什么写操作要停容器
+
+知识库是「doc.db + FTS 索引 + FAISS 向量」三份，框架自己有原子双写接口
+（`vec_db.delete` / `vec_db.insert`）。两边同时写 `index.faiss` 会打架，所以写操作
+= 停容器 → 用同一个镜像起一次性容器改 → 起回来。`review.sh` 挂了 `trap`，异常退出也会把容器起回来。
+
+**一批多种操作要走 `batch`**：逐个跑 `keep`/`delete` 会各停起一次容器（每次约 40 秒），
+复核一轮下来 bot 反复离线。
+
+### 网页版
+
+```bash
+cd tools
+python3 webui.py                            # 默认 127.0.0.1:8790
+HOST=0.0.0.0 PORT=8790 python3 webui.py     # ⚠️ 见下
+```
+
+⚠️ **绑到 `0.0.0.0` 之前先想清楚**：这一页上就是记忆正文，能连到的人**既能读也能删**。
+「在家里」不是安全边界（访客网络、物联网设备、手机丢了都算）。要绑非本机地址：
+在 `~/.config/kb-review-web/token` 写一个口令（0600），口令存在就要求登录，
+登录后发 `HttpOnly` cookie（一年）；另支持 `http://<host>:8790/?token=xxxx`
+一次性链接直接在手机上打开。口令每次请求现读 —— 改口令不用重启服务。
+明文 HTTP，只当局域网内措施用。
+
+界面上：顶部两个筛选（待审/存疑 · 全部）+ 刷新 + 一致性检查；每条右边四个按钮
+（通过 / 存疑 / 取消存疑 / 删除）；底部「应用」把选中项合成一个 batch 计划提交。
+写入是**异步任务**（返回 `job_id`，页面每 1.5 秒轮询进度）—— 因为一次写入要 30~60 秒，
+写完才返回的话中途刷新就收不到回执，页面报错而库里其实已经改完了。
+页面加载时会先探一次任务状态，所以刷新能接上。
+
+### 环境变量
+
+```
+KB_ROOT    知识库根目录     默认 ~/astrbot/data/knowledge_base
+KB_NAME    知识库名字       默认 长期记忆   ★ 要和两个插件的 KB_NAME 一致
+REVIEW_SH  review.sh 路径   默认与本文件同目录
+HOST/PORT  WebUI 监听        默认 127.0.0.1:8790
+TOKEN_FILE 口令文件          默认 ~/.config/kb-review-web/token
+```
+
+### 自测
+
+`selftest.sh` 在知识库的**副本**上真删一条、标一条存疑、再 keep 回来，全程不碰线上库：
+
+```bash
+cd tools
+docker run --rm -v ~/astrbot/data:/AstrBot/data -v "$PWD":/kb:ro \
+  soulter/astrbot:latest bash /kb/selftest.sh
+```
+
+⚠️ 脚本里默认的两个 sid 是占位值 —— 先 `./review.sh list` 抄两个真实的 4 位编号，
+用 `SID_DELETE=… SID_SUSPECT=…` 传进去。
 
 ---
 
