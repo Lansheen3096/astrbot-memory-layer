@@ -96,7 +96,9 @@ class FakeVecDB:
 
 
 class FakeKB:
-    def __init__(self, dimension: int = VECTOR_DIM, count: int = 5, model: str = "bge-m3"):
+    def __init__(
+        self, dimension: int = VECTOR_DIM, count: int = 5, model: str = "bge-m3"
+    ):
         self.kb = SimpleNamespace(
             kb_id="kb-test",
             kb_name="长期记忆",
@@ -119,9 +121,7 @@ class FakeProviderManager:
 
     async def create_provider(self, cfg):
         self.providers_config.append(dict(cfg))
-        self.instance = FakeEP(
-            cfg["embedding_model"], cfg["embedding_dimensions"]
-        )
+        self.instance = FakeEP(cfg["embedding_model"], cfg["embedding_dimensions"])
 
     async def update_provider(self, provider_id, cfg):
         self.providers_config = [
@@ -130,9 +130,7 @@ class FakeProviderManager:
         ]
         if not any(item.get("id") == provider_id for item in self.providers_config):
             self.providers_config.append(dict(cfg))
-        self.instance = FakeEP(
-            cfg["embedding_model"], cfg["embedding_dimensions"]
-        )
+        self.instance = FakeEP(cfg["embedding_model"], cfg["embedding_dimensions"])
 
     async def get_provider_by_id(self, provider_id):
         if any(item.get("id") == provider_id for item in self.providers_config):
@@ -295,9 +293,7 @@ async def main() -> None:
         expect_value(
             provider_cfg["embedding_dimensions"] == VECTOR_DIM, "provider 维度"
         )
-        expect_value(
-            provider_cfg["embedding_api_key"] == "test-key", "provider key"
-        )
+        expect_value(provider_cfg["embedding_api_key"] == "test-key", "provider key")
         local_provider = instance._build_provider_config(local_cfg, VECTOR_DIM)
         expect_value(
             local_provider["type"] == "ollama_embedding", "Ollama provider type"

@@ -62,7 +62,7 @@ KB_ROOT = Path(get_astrbot_knowledge_base_path())
 PLUGIN_DATA_DIR = Path(get_astrbot_plugin_data_path()) / PLUGIN_NAME
 STATE_PATH = PLUGIN_DATA_DIR / "state.json"
 LEGACY_STATE_PATH = DATA_DIR / "memory_digest_state.json"
-KB_NAME = "长期记忆"   # ★ 必须和 astrbot_plugin_memory_recall 里的一致
+KB_NAME = "长期记忆"  # ★ 必须和 astrbot_plugin_memory_recall 里的一致
 
 # 控制台创建/维护的 AstrBot embedding provider。固定 ID 便于重复保存时原地更新，
 # 也不会和用户手工创建的 provider 抢名字。
@@ -84,7 +84,7 @@ DEFAULT_SETTINGS = {
 SETTINGS_FILE = PLUGIN_DATA_DIR / "embedding_settings.json"
 
 # 时间锚：上游把【收到用户消息的那一刻】写成 <system_reminder> 附在 user 消息里
-#（本仓库的 astrbot-reply-rhythm / pacer 就干这个；没有也能跑）
+# （本仓库的 astrbot-reply-rhythm / pacer 就干这个；没有也能跑）
 REMINDER_RE = re.compile(r"<system_reminder>(.*?)</system_reminder>", re.S)
 QUOTED_RE = re.compile(r"<Quoted Message>.*?</Quoted Message>", re.S)
 DT_RE = re.compile(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2})")
@@ -113,11 +113,37 @@ REVIEW_STATUS = "new"  # 新写入条目的待审标记
 # 硬过滤：命中这些词的记忆一律不写
 # （prompt 里的规则模型会选择性忽略，代码过滤不会）
 BLOCK_WORDS = (
-    "账号", "帐号", "管理员", "权限", "配置", "设置项", "参数",
-    "报错", "错误码", "网址", "链接", "接口", "端口", "密码",
-    "令牌", "密钥", "指令", "命令", "模型", "提示词", "数据库",
-    "日志", "脚本", "插件", "重启", "部署", "代码", "程序",
-    "系统提示", "文件夹", "路径",
+    "账号",
+    "帐号",
+    "管理员",
+    "权限",
+    "配置",
+    "设置项",
+    "参数",
+    "报错",
+    "错误码",
+    "网址",
+    "链接",
+    "接口",
+    "端口",
+    "密码",
+    "令牌",
+    "密钥",
+    "指令",
+    "命令",
+    "模型",
+    "提示词",
+    "数据库",
+    "日志",
+    "脚本",
+    "插件",
+    "重启",
+    "部署",
+    "代码",
+    "程序",
+    "系统提示",
+    "文件夹",
+    "路径",
 )
 
 # 人称一律用【字段】而不是代词：用户永远是 [用户]，助手永远是 我。
@@ -318,7 +344,9 @@ class Main(star.Star):
             return
         register = getattr(self.context, "register_web_api", None)
         if not callable(register):
-            logger.warning("[记忆] context.register_web_api 不可用，跳过控制台 API 注册")
+            logger.warning(
+                "[记忆] context.register_web_api 不可用，跳过控制台 API 注册"
+            )
             return
         routes = (
             (
@@ -431,7 +459,7 @@ class Main(star.Star):
         lines: list[str] = []
         anchors: set[str] = set()
         turns: list[dict] = []
-        cur = ""   # 当前这一轮的时间锚
+        cur = ""  # 当前这一轮的时间锚
         for m in msgs:
             if not isinstance(m, dict):
                 continue
@@ -440,9 +468,9 @@ class Main(star.Star):
                 continue
             parts: list[str] = []
             content = m.get("content")
-            if isinstance(content, str):          # 兜底：老数据可能存成裸字符串
+            if isinstance(content, str):  # 兜底：老数据可能存成裸字符串
                 content = [{"type": "text", "text": content}]
-            elif isinstance(content, dict):       # 兜底：单个 block 没包成 list
+            elif isinstance(content, dict):  # 兜底：单个 block 没包成 list
                 content = [content]
             for blk in content or []:
                 if isinstance(blk, str):
@@ -478,7 +506,9 @@ class Main(star.Star):
 
     # ───────────────────── 去重 ─────────────────────
 
-    async def _dedupe(self, kb, items: list[dict]) -> tuple[list[dict], int, list[list[float]]]:
+    async def _dedupe(
+        self, kb, items: list[dict]
+    ) -> tuple[list[dict], int, list[list[float]]]:
         """和库里已有的、以及本批已保留的比，太像的丢掉。
 
         Returns:
@@ -499,7 +529,9 @@ class Main(star.Star):
         # 去重只比正文（老条目的正文里可能还带 [时间] 前缀，先剥掉）
         existing = [_strip_anchor(t) for t in _load_existing_texts(kb.kb.kb_id)]
         try:
-            new_vecs = await ep.get_embeddings([_strip_anchor(it["text"]) for it in items])
+            new_vecs = await ep.get_embeddings(
+                [_strip_anchor(it["text"]) for it in items]
+            )
             old_vecs = await ep.get_embeddings(existing) if existing else []
         except Exception as exc:
             logger.warning("[记忆] 算向量失败，跳过去重：%s", exc)
@@ -604,9 +636,14 @@ class Main(star.Star):
                     it["suspect"] = 1
                     flagged += 1
                     logger.info(
-                        "[记忆] 来源存疑（c_user=%.3f < %.2f）：%s", c_user, SOURCE_T, it["text"][:60]
+                        "[记忆] 来源存疑（c_user=%.3f < %.2f）：%s",
+                        c_user,
+                        SOURCE_T,
+                        it["text"][:60],
                     )
-            logger.info("[记忆] 来源校验完成：%d 条，标 suspect %d 条", len(plan), flagged)
+            logger.info(
+                "[记忆] 来源校验完成：%d 条，标 suspect %d 条", len(plan), flagged
+            )
         except Exception as exc:  # noqa: BLE001  校验失败绝不拖垮整理
             logger.warning("[记忆] 来源校验失败，本轮不标 suspect：%s", exc)
 
@@ -670,12 +707,14 @@ class Main(star.Star):
                 md["kind"] = it["kind"]
                 md["event_date"] = it["event_date"]
                 md["confidence"] = it["conf"]
-                md["sid"] = "%04d" % sid
-                md["status"] = REVIEW_STATUS      # 待审：recall 端打 0.5 折，人工过目后改 ok
+                md["sid"] = f"{sid:04d}"
+                md["status"] = (
+                    REVIEW_STATUS  # 待审：recall 端打 0.5 折，人工过目后改 ok
+                )
                 if it.get("c_user") is not None:
-                    md["c_user"] = it["c_user"]   # 来源校验分数，留着调阈值用
+                    md["c_user"] = it["c_user"]  # 来源校验分数，留着调阈值用
                 if it.get("suspect"):
-                    md["suspect"] = 1             # 来源存疑：recall 端一律不注入
+                    md["suspect"] = 1  # 来源存疑：recall 端一律不注入
                 con.execute(
                     "update documents set metadata=? where doc_id=?",
                     (json.dumps(md, ensure_ascii=False), cid),
@@ -713,9 +752,7 @@ class Main(star.Star):
             joined = "\n".join(existing)
             if len(joined) > MAX_EXISTING_CHARS:
                 joined = joined[-MAX_EXISTING_CHARS:]
-            return (
-                DIGEST_SYSTEM + "\n\n【你已经记住的这些，不要再写一遍】\n" + joined
-            )
+            return DIGEST_SYSTEM + "\n\n【你已经记住的这些，不要再写一遍】\n" + joined
 
         docs = 0
         items_total = 0
@@ -761,9 +798,7 @@ class Main(star.Star):
                 continue
 
             out = (resp.completion_text or "").strip()
-            items, pstats = _parse_digest(
-                out, anchors, time.strftime("%Y-%m-%d")
-            )
+            items, pstats = _parse_digest(out, anchors, time.strftime("%Y-%m-%d"))
             bad_json_total += pstats["bad_json"]
             bad_anchor_total += pstats["bad_anchor"]
             bad_kind_total += pstats["bad_kind"]
@@ -927,9 +962,7 @@ class Main(star.Star):
         # 没有插件配置对象时（例如测试环境），退回到插件数据目录里的 JSON。
         PLUGIN_DATA_DIR.mkdir(parents=True, exist_ok=True)
         tmp = SETTINGS_FILE.with_suffix(".tmp")
-        tmp.write_text(
-            json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        tmp.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
         tmp.replace(SETTINGS_FILE)
 
     @staticmethod
@@ -964,8 +997,7 @@ class Main(star.Star):
                 "dimensions": cfg["cloud_dimensions"],
                 "api_key_set": has_key,
                 "api_key_hint": self._mask_secret(
-                    cfg["cloud_api_key"]
-                    or str(existing.get("embedding_api_key") or "")
+                    cfg["cloud_api_key"] or str(existing.get("embedding_api_key") or "")
                 ),
             },
             "local": {
@@ -981,9 +1013,11 @@ class Main(star.Star):
     def _merge_payload(self, payload: dict) -> dict:
         if not isinstance(payload, dict):
             raise ValueError("请求体必须是 JSON 对象")
-        mode = str(
-            payload.get("embedding_mode") or payload.get("mode") or "kb"
-        ).strip().lower()
+        mode = (
+            str(payload.get("embedding_mode") or payload.get("mode") or "kb")
+            .strip()
+            .lower()
+        )
         if mode not in EMBEDDING_MODES:
             raise ValueError("embedding_mode 只能是 kb / cloud / local")
 
@@ -1009,9 +1043,7 @@ class Main(star.Star):
             if "host" in local:
                 cfg["local_host"] = str(local.get("host") or "").strip()
             if "port" in local:
-                cfg["local_port"] = self._to_int(
-                    local.get("port"), cfg["local_port"]
-                )
+                cfg["local_port"] = self._to_int(local.get("port"), cfg["local_port"])
             if "api" in local:
                 cfg["local_api"] = str(local.get("api") or "").strip().lower()
             if "model" in local:
@@ -1023,9 +1055,7 @@ class Main(star.Star):
 
         timeout = payload.get("timeout", payload.get("embedding_timeout"))
         if timeout is not None:
-            cfg["embedding_timeout"] = self._to_int(
-                timeout, cfg["embedding_timeout"]
-            )
+            cfg["embedding_timeout"] = self._to_int(timeout, cfg["embedding_timeout"])
 
         cfg = self._normalize_settings(cfg)
         if mode == "cloud":
@@ -1179,9 +1209,7 @@ class Main(star.Star):
                 f"连接超时（{timeout}s）：{self._redact_url(url)}"
             ) from exc
         except aiohttp.ClientError as exc:
-            raise ValueError(
-                f"连接失败：{self._redact_url(url)}：{exc}"
-            ) from exc
+            raise ValueError(f"连接失败：{self._redact_url(url)}：{exc}") from exc
 
         if status != 200:
             safe_body = body.replace(key, "***") if key else body
@@ -1290,9 +1318,7 @@ class Main(star.Star):
                 {
                     "id": item.get("id") or "",
                     "type": ptype,
-                    "model": item.get("embedding_model")
-                    or item.get("model")
-                    or "",
+                    "model": item.get("embedding_model") or item.get("model") or "",
                     "base": item.get("embedding_api_base")
                     or item.get("api_base")
                     or "",
@@ -1363,12 +1389,7 @@ class Main(star.Star):
             logger.warning("[记忆] 读取知识库当前 embedding 模型失败：%s", exc)
 
         new_model = str(provider_cfg.get("embedding_model") or "")
-        if (
-            current_model
-            and new_model
-            and current_model != new_model
-            and not force
-        ):
+        if current_model and new_model and current_model != new_model and not force:
             raise ValueError(
                 f"知识库已有 {doc_count} 条记忆，当前模型是 {current_model}，"
                 f"新模型是 {new_model}。不同模型即使维度相同也不在同一向量空间；"
@@ -1387,7 +1408,9 @@ class Main(star.Star):
     async def _upsert_managed_provider(self, provider_cfg: dict) -> None:
         manager = getattr(self.context, "provider_manager", None)
         if manager is None:
-            raise ValueError("拿不到 AstrBot provider_manager，无法创建 embedding provider")
+            raise ValueError(
+                "拿不到 AstrBot provider_manager，无法创建 embedding provider"
+            )
         if self._managed_provider_config():
             await manager.update_provider(MANAGED_PROVIDER_ID, provider_cfg)
         else:
@@ -1452,9 +1475,7 @@ class Main(star.Star):
             if updated is None:
                 raise ValueError("知识库更新失败，请查看 AstrBot 日志")
             if getattr(updated, "init_error", None):
-                raise ValueError(
-                    f"知识库重新初始化失败：{updated.init_error}"
-                )
+                raise ValueError(f"知识库重新初始化失败：{updated.init_error}")
             helper = updated
 
         ep = await helper.get_ep()
@@ -1517,9 +1538,7 @@ class Main(star.Star):
                 or ""
             )
             snapshot["embedding_base"] = str(
-                (getattr(ep, "provider_config", {}) or {}).get(
-                    "embedding_api_base"
-                )
+                (getattr(ep, "provider_config", {}) or {}).get("embedding_api_base")
                 or getattr(ep, "base_url", "")
                 or ""
             )
@@ -1565,7 +1584,9 @@ class Main(star.Star):
         try:
             return json_response(await self._status_payload())
         except Exception as exc:  # noqa: BLE001
-            logger.error("[记忆] 控制台状态读取失败：%s\n%s", exc, traceback.format_exc())
+            logger.error(
+                "[记忆] 控制台状态读取失败：%s\n%s", exc, traceback.format_exc()
+            )
             return error_response(f"读取状态失败：{exc}", status_code=500)
 
     async def api_test_embedding(self):
@@ -1639,9 +1660,7 @@ class Main(star.Star):
             try:
                 await self._save_settings_async(cfg)
             except Exception as exc:  # noqa: BLE001
-                logger.error(
-                    "[记忆] 知识库已绑定，但插件配置保存失败：%s", exc
-                )
+                logger.error("[记忆] 知识库已绑定，但插件配置保存失败：%s", exc)
                 warnings.append(f"知识库已绑定，但插件配置写入失败：{exc}")
 
             try:
@@ -1663,9 +1682,7 @@ class Main(star.Star):
         except ValueError as exc:
             return error_response(str(exc), status_code=400)
         except Exception as exc:  # noqa: BLE001
-            logger.error(
-                "[记忆] 控制台保存失败：%s\n%s", exc, traceback.format_exc()
-            )
+            logger.error("[记忆] 控制台保存失败：%s\n%s", exc, traceback.format_exc())
             return error_response(f"保存失败：{exc}", status_code=500)
 
     def _status_text(self) -> str:

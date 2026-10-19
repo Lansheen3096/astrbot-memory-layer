@@ -75,9 +75,7 @@ async def main() -> None:
     # 3) i18n
     i18n = PluginManager._load_plugin_i18n(str(PLUGIN_DIR))
     expect("zh-CN" in i18n and "en-US" in i18n, "应加载中英文 i18n")
-    title = (
-        i18n["zh-CN"].get("views", {}).get("embedding-console", {}).get("title")
-    )
+    title = i18n["zh-CN"].get("views", {}).get("embedding-console", {}).get("title")
     expect(title == "Embedding 控制台", f"视图标题不对：{title!r}")
     expect(
         i18n["en-US"].get("views", {}).get("embedding-console", {}).get("title")
