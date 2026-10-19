@@ -28,25 +28,27 @@ from astrbot.api import logger, star
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.core.agent.message import TextPart
 
-KB_NAME = "长期记忆"   # ★ 必须和 astrbot_plugin_memory_digest 里的一致
+KB_NAME = "长期记忆"  # ★ 必须和 astrbot_plugin_memory_digest 里的一致
 
 # 消息里对助手的称呼（昵称、爱称都算），打分前统一归一成「他」。
 # ★ 按你部署里实际会出现的称呼填；默认空 = 不做归一。
 #   打分用的查询越干净越准 —— 称呼词对检索没有信息量，只会稀释相似度。
 ADDRESS_WORDS: tuple[str, ...] = ()
 
-FLOOR = 0.05          # 地板
-LEAD = 2.0            # 领先倍数
-STATE_MAX = 40        # 状态层最多几条（本来就是全量，这个只是保险）
-RECALL_MAX = 3        # 偏好+事件合计最多注入几条
+FLOOR = 0.05  # 地板
+LEAD = 2.0  # 领先倍数
+STATE_MAX = 40  # 状态层最多几条（本来就是全量，这个只是保险）
+RECALL_MAX = 3  # 偏好+事件合计最多注入几条
 HALFLIFE_DAYS = 30.0  # 事件层时间衰减半衰期
-DECAY_FLOOR = 0.35    # 时间衰减不会把一条压到比这个更低
-NEW_DISCOUNT = 0.5    # status="new"（待审）降权
-MAX_CHARS = 1500      # 注入文本总长上限
-TRACE = True          # 每轮往日志写一行判据明细，方便以后调参
+DECAY_FLOOR = 0.35  # 时间衰减不会把一条压到比这个更低
+NEW_DISCOUNT = 0.5  # status="new"（待审）降权
+MAX_CHARS = 1500  # 注入文本总长上限
+TRACE = True  # 每轮往日志写一行判据明细，方便以后调参
 
 _SYS = re.compile(r"<system_reminder>.*?</system_reminder>", re.S)
-_BURST_TS = re.compile(r"^\s*\[\d{2}:\d{2}:\d{2}\]\s*")   # 上游 burst 插件聚合消息的逐条时刻前缀
+_BURST_TS = re.compile(
+    r"^\s*\[\d{2}:\d{2}:\d{2}\]\s*"
+)  # 上游 burst 插件聚合消息的逐条时刻前缀
 _BRK = re.compile(r"[（(]([^）)]*)[）)]")
 _TAIL = re.compile(r"[~～…\.。！!？?，,、]+$")
 _WS = re.compile(r"\s+")
@@ -70,15 +72,15 @@ def clean_query(raw: str) -> str:
     if not raw:
         return ""
     m = _SYS.sub("", raw).split("\n")[0]
-    m = _BURST_TS.sub("", m)          # 聚合过的消息首行带时刻前缀，先剥掉再打分
+    m = _BURST_TS.sub("", m)  # 聚合过的消息首行带时刻前缀，先剥掉再打分
     acts = _BRK.findall(m)
     m = _BRK.sub(" ", m)
     body = _WS.sub(" ", m).strip()
     body = _TAIL.sub("", body).strip(" ，。~～…")
-    for _w in ADDRESS_WORDS:            # 消息里对助手的称呼先归一掉，打分时只会干扰
+    for _w in ADDRESS_WORDS:  # 消息里对助手的称呼先归一掉，打分时只会干扰
         body = body.replace(_w, USER_REF)
     body = body.replace("你", SELF_REF)
-    if not body and acts:                       # 纯动作消息（整句都在括号里）
+    if not body and acts:  # 纯动作消息（整句都在括号里）
         body = acts[0].replace("你", SELF_REF)
     if body and not body.startswith((USER_REF, SELF_REF)):
         body = USER_REF + body
@@ -109,6 +111,14 @@ def _norm_meta(md) -> dict:
 class Main(star.Star):
     def __init__(self, context, config=None):
         super().__init__(context, config)
+        self.config = config or {}
+        self.kb_name = str(self.config.get("kb_name") or KB_NAME)
+        trace = self.config.get("trace", TRACE)
+        self.trace = (
+            trace
+            if isinstance(trace, bool)
+            else str(trace).strip().lower() in {"1", "true", "yes", "on"}
+        )
 
     @filter.on_llm_request()
     async def recall(self, event: AstrMessageEvent, *args, **kwargs) -> None:
@@ -123,9 +133,9 @@ class Main(star.Star):
             )
 
     async def _recall(self, event: AstrMessageEvent, req) -> None:
-        kb = await self.context.kb_manager.get_kb_by_name(KB_NAME)
+        kb = await self.context.kb_manager.get_kb_by_name(self.kb_name)
         if kb is None:
-            logger.warning(f"[recall] 找不到知识库「{KB_NAME}」")
+            logger.warning(f"[recall] 找不到知识库「{self.kb_name}」")
             return
         vec_db = kb.vec_db
         raw = getattr(req, "prompt", None) or ""
@@ -136,19 +146,23 @@ class Main(star.Star):
             return
 
         # ── 取全库（48 条这个体量，直接全量打分比 dense 预筛更准也更简单）──
-        docs = await vec_db.document_storage.get_documents(metadata_filters={}, limit=1000)
+        docs = await vec_db.document_storage.get_documents(
+            metadata_filters={}, limit=1000
+        )
         items = []
         for d in docs:
             md = _norm_meta(d.get("metadata"))
-            if md.get("suspect") in (1, "1", True):      # 来源存疑 → 一律不注入
+            if md.get("suspect") in (1, "1", True):  # 来源存疑 → 一律不注入
                 continue
-            items.append({
-                "text": d.get("text") or "",
-                "kind": md.get("kind") or "event",
-                "sid": md.get("sid") or "?",
-                "event_date": md.get("event_date"),
-                "status": md.get("status"),
-            })
+            items.append(
+                {
+                    "text": d.get("text") or "",
+                    "kind": md.get("kind") or "event",
+                    "sid": md.get("sid") or "?",
+                    "event_date": md.get("event_date"),
+                    "status": md.get("status"),
+                }
+            )
         if not items:
             return
 
@@ -163,7 +177,9 @@ class Main(star.Star):
             if rp is None:
                 logger.warning("[recall] rerank provider 不可用，本轮只注入状态层")
             else:
-                res = await rp.rerank(query=query, documents=[it["text"] for it in pool])
+                res = await rp.rerank(
+                    query=query, documents=[it["text"] for it in pool]
+                )
                 scored = []
                 for r in res:
                     if 0 <= r.index < len(pool):
@@ -182,20 +198,30 @@ class Main(star.Star):
                     passed = top1 >= FLOOR and top1 >= LEAD * top2
                     if passed:
                         # 逐条也要过地板 —— 否则 top1 勉强过闸时会把 0.02 的噪声一起带进去
-                        recalled = [it for it in scored[:RECALL_MAX] if it["score"] >= FLOOR]
+                        recalled = [
+                            it for it in scored[:RECALL_MAX] if it["score"] >= FLOOR
+                        ]
 
         parts = []
         if states:
-            parts.append("【你们现在的状态｜每轮都给】\n"
-                         + "\n".join(f"- {it['text']}" for it in states))
+            parts.append(
+                "【你们现在的状态｜每轮都给】\n"
+                + "\n".join(f"- {it['text']}" for it in states)
+            )
         if recalled:
-            parts.append("【这轮可能用得上的回忆】\n"
-                         + "\n".join(f"- {it['text']}" for it in recalled))
+            parts.append(
+                "【这轮可能用得上的回忆】\n"
+                + "\n".join(f"- {it['text']}" for it in recalled)
+            )
 
-        if TRACE:
+        if self.trace:
             logger.info(
                 "[recall] q=%r top1=%.4f top2=%.4f 过闸=%s 状态=%d 回忆=%s",
-                query[:40], top1, top2, passed, len(states),
+                query[:40],
+                top1,
+                top2,
+                passed,
+                len(states),
                 [it["sid"] for it in recalled] or "-",
             )
 

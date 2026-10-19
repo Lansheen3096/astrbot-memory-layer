@@ -1,4 +1,25 @@
 {
+  "_kb_section": {
+    "description": "=== 知识库 ===",
+    "type": "text",
+    "invisible": true
+  },
+  "kb_name": {
+    "description": "知识库名字",
+    "type": "string",
+    "default": "长期记忆",
+    "hint": "必须和注入侧 astrbot_plugin_memory_recall 的同名配置一致。"
+  },
+  "_embedding_section": {
+    "description": "=== Embedding 来源 ===",
+    "type": "text",
+    "invisible": true
+  },
+  "_embedding_note": {
+    "description": "保存后插件会热重载，并按这里的设置创建/更新 memory_layer_embedding，再绑定记忆知识库。已经一致就跳过。",
+    "type": "text",
+    "invisible": true
+  },
   "embedding_mode": {
     "description": "Embedding 来源",
     "type": "string",
@@ -10,7 +31,12 @@
       "本机 Ollama 或 OpenAI 兼容的 embedding 服务"
     ],
     "default": "kb",
-    "hint": "在插件控制台里可视化配置；这里只保存值，真正的创建/绑定由控制台完成。"
+    "hint": "跟随知识库时不会修改任何 provider / 知识库绑定。"
+  },
+  "_cloud_section": {
+    "description": "=== 云端 API（embedding_mode=cloud 时生效）===",
+    "type": "text",
+    "invisible": true
   },
   "cloud_api_base": {
     "description": "云端 API Base",
@@ -23,7 +49,7 @@
     "type": "string",
     "default": "",
     "secret": true,
-    "hint": "只保存在本机配置里，不会通过控制台接口回显。"
+    "hint": "只保存在本机配置里，不会回显。留空表示沿用已保存的 Key。"
   },
   "cloud_model": {
     "description": "云端 Embedding 模型",
@@ -34,13 +60,18 @@
     "description": "云端向量维度",
     "type": "int",
     "default": 0,
-    "hint": "0 表示保存时自动探测；探测结果会写回这里。"
+    "hint": "0 表示保存后自动探测；探测结果会写回这里。"
+  },
+  "_local_section": {
+    "description": "=== 本机服务（embedding_mode=local 时生效）===",
+    "type": "text",
+    "invisible": true
   },
   "local_host": {
     "description": "本机服务地址",
     "type": "string",
     "default": "127.0.0.1",
-    "hint": "容器部署时注意：127.0.0.1 指的是 AstrBot 容器自身，不是宿主机。"
+    "hint": "容器部署时 127.0.0.1 是 AstrBot 容器自身；宿主机服务填 host.docker.internal。"
   },
   "local_port": {
     "description": "本机服务端口",
@@ -64,12 +95,29 @@
     "description": "本机向量维度",
     "type": "int",
     "default": 0,
-    "hint": "0 表示保存时自动探测；探测结果会写回这里。"
+    "hint": "0 表示保存后自动探测；探测结果会写回这里。"
+  },
+  "_apply_section": {
+    "description": "=== 应用策略 ===",
+    "type": "text",
+    "invisible": true
   },
   "embedding_timeout": {
     "description": "请求超时（秒）",
     "type": "int",
     "default": 60,
     "slider": {"min": 5, "max": 300, "step": 5}
+  },
+  "create_kb_if_missing": {
+    "description": "知识库不存在时自动创建",
+    "type": "bool",
+    "default": true,
+    "hint": "关闭后，找不到知识库只会打错误日志，不会自动建库。"
+  },
+  "force_rebind": {
+    "description": "允许同维度换模型",
+    "type": "bool",
+    "default": false,
+    "hint": "默认拒绝换模型：不同模型即使维度相同也不在同一向量空间。维度不同永远拒绝。"
   }
 }

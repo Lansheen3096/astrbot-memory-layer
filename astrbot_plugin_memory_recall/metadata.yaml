@@ -1,15 +1,22 @@
 name: astrbot_plugin_memory_recall
-display_name: 记忆层 · 注入侧
-short_desc: 接管记忆注入：状态层全量，偏好/事件层过闸门，事件按时间递减。
+display_name: 长期记忆（注入侧）
+short_desc: 接管记忆注入：状态层全量，偏好/事件层过闸门，事件按时间递减
 desc: |
-  接管记忆注入：状态层全量、偏好/事件层过「地板 + 领先」闸门，
-  事件按半衰期时间递减。
+  接管 AstrBot 的记忆注入，按「状态 / 偏好 / 事件」三层策略走。
 
-  与写入侧 astrbot_plugin_memory_digest 配套使用，两个插件的 KB_NAME 必须一致。
-version: 0.2.0
+  **状态层**：双方是什么关系（称呼 / 关系定位 / 陪伴承诺），每轮全量注入，不过闸门。
+  **偏好 / 事件层**：先用 rerank 打分，再过「地板 + 领先」闸门；事件按半衰期时间递减。
+
+  **查询清洗**：拿用户那句话，去掉动作描写、时刻前缀、尾标点，归一称呼，
+  只用于打分，不给模型看。实测比整段 prompt 打分准得多。
+
+  **和 digest 的关系**：写入侧 astrbot_plugin_memory_digest 负责写库，
+  本插件负责读库并注入。两个插件的 `kb_name` 配置必须一致。
 author: Lansheen3096
+version: 0.2.0
 repo: https://github.com/Lansheen3096/astrbot-memory-layer
-astrbot_version: ">=4.28.0,<5"
+astrbot_version: ">=4.28.2"
 tags:
-  - memory
-  - recall
+  - 记忆
+  - 注入
+  - RAG

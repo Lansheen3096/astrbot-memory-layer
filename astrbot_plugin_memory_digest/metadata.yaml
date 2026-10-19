@@ -1,21 +1,26 @@
 name: astrbot_plugin_memory_digest
-display_name: 记忆层 · 写入侧
-short_desc: 把对话提炼成第一人称长期记忆，并自带 Embedding 控制台。
+display_name: 长期记忆（写入侧）
+short_desc: 把对话提炼成第一人称长期记忆，写进 AstrBot 知识库
 desc: |
-  把对话提炼成 bot 的第一人称长期记忆，写进 AstrBot 知识库。
+  把对话提炼成 bot 的第一人称长期记忆，写进知识库。
 
-  三层分类（状态 / 偏好 / 事件）+ 置信度 + 余弦去重 + 来源校验。
-  新增插件可视化视图「Embedding 控制台」：可以直接选择云端 OpenAI 兼容
-  embedding API，或填写本机 embedding 服务地址与端口；保存时会创建/更新
-  对应的 AstrBot embedding provider，并绑定到记忆知识库。
+  **三层分类**：state / preference / event，判据是「加不加日期才成立」。
+  state 每轮全量注入；preference 和 event 走检索 + 闸门，event 还按时间递减。
 
-  两个插件必须一起装：写入侧 astrbot_plugin_memory_digest + 注入侧
-  astrbot_plugin_memory_recall。
-version: 0.2.0
+  **写入闸门**：时间锚硬校验 + 关键词黑名单 + 余弦去重 + 来源校验。
+  新条目默认是待审状态，复核工具在仓库的 `tools/` 里。
+
+  **Embedding**：在插件配置页选择「跟随知识库 / 云端 API / 本机服务」。
+  保存后 AstrBot 热重载插件，由插件创建/更新 `memory_layer_embedding` 并绑定知识库；
+  维度不一致会拒绝，同维度换模型需要显式打开开关。
+
+  **和 recall 的关系**：写入侧负责记什么，注入侧负责什么时候拿出来。
+  两个插件的 `kb_name` 配置必须一致，少装一个链路就不完整。
 author: Lansheen3096
+version: 0.2.0
 repo: https://github.com/Lansheen3096/astrbot-memory-layer
-astrbot_version: ">=4.28.0,<5"
+astrbot_version: ">=4.28.2"
 tags:
-  - memory
-  - knowledge-base
-  - embedding
+  - 记忆
+  - 知识库
+  - Embedding

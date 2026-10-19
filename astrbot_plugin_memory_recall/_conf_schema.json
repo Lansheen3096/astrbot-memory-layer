@@ -1,0 +1,24 @@
+{
+  "_recall_section": {
+    "description": "=== 记忆注入 ===",
+    "type": "text",
+    "invisible": true
+  },
+  "_recall_note": {
+    "description": "写入侧和注入侧必须指向同一个知识库；本页只控制注入侧怎么读。",
+    "type": "text",
+    "invisible": true
+  },
+  "kb_name": {
+    "description": "知识库名字",
+    "type": "string",
+    "default": "长期记忆",
+    "hint": "必须和写入侧 astrbot_plugin_memory_digest 的同名配置一致。"
+  },
+  "trace": {
+    "description": "记录每轮判据明细",
+    "type": "bool",
+    "default": true,
+    "hint": "每轮往日志写一行 top1 / top2 / 是否过闸 / 注入了哪些 sid。排查闸门时打开；嫌日志多可以关掉。"
+  }
+}

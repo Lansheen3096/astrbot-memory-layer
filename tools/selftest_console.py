@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Embedding 控制台自测（在 AstrBot 镜像里跑，不碰线上配置）。
+"""Embedding 配置自测（在 AstrBot 镜像里跑，不碰线上配置）。
 
 用法：
     docker run --rm \
@@ -7,12 +7,12 @@
       -v "$PWD/tools":/tools:ro \
       soulter/astrbot:latest python /tools/selftest_console.py
 
-它做三件事：
+它做四件事：
   1. 起一个假的 OpenAI / Ollama embedding 服务；
-  2. 直接 import 插件的 main.py，测 `_probe_embedding` / `_merge_payload` /
-     `_build_provider_config`；
+  2. 直接 import 插件的 main.py，测 `_probe_embedding` / `_build_provider_config`；
   3. 用假 provider/kb manager 测 `_apply_embedding` 的维度闸门、模型闸门、
-     强制切换与自动建库。
+     强制切换与自动建库；
+  4. 测「配置页保存 → 热重载 → `_sync_embedding_from_config` 自动应用」。
 """
 
 from __future__ import annotations
@@ -177,9 +177,6 @@ class FakeContext:
     def get_config(self, umo=None):  # noqa: ARG002
         return self.config
 
-    def register_web_api(self, *_args, **_kwargs):
-        return None
-
 
 def load_plugin():
     spec = importlib.util.spec_from_file_location("memory_digest_selftest", PLUGIN_MAIN)
@@ -221,9 +218,7 @@ async def main() -> None:
             "local target 127.0.0.1",
         )
         expect_value(
-            plugin.Main._normalize_local_target(
-                "http://host.docker.internal:11434", 1
-            )
+            plugin.Main._normalize_local_target("http://host.docker.internal:11434", 1)
             == ("host.docker.internal", 11434),
             "local target URL 形式应解析出 host/port",
         )
@@ -239,16 +234,14 @@ async def main() -> None:
         )
 
         # 云端探测
-        cloud_cfg = instance._merge_payload(
+        cloud_cfg = plugin.Main._normalize_settings(
             {
                 "embedding_mode": "cloud",
-                "cloud": {
-                    "api_base": f"http://127.0.0.1:{port}/v1",
-                    "api_key": "test-key",
-                    "model": "text-embedding-3-small",
-                    "dimensions": 0,
-                },
-                "timeout": 10,
+                "cloud_api_base": f"http://127.0.0.1:{port}/v1",
+                "cloud_api_key": "test-key",
+                "cloud_model": "text-embedding-3-small",
+                "cloud_dimensions": 0,
+                "embedding_timeout": 10,
             }
         )
         probe = await instance._probe_embedding(cloud_cfg)
@@ -256,34 +249,30 @@ async def main() -> None:
         expect_value(probe["endpoint"].endswith("/v1/embeddings"), "云端探测 URL")
 
         # 本机 Ollama
-        local_cfg = instance._merge_payload(
+        local_cfg = plugin.Main._normalize_settings(
             {
                 "embedding_mode": "local",
-                "local": {
-                    "host": "127.0.0.1",
-                    "port": port,
-                    "api": "ollama",
-                    "model": "bge-m3",
-                    "dimensions": 0,
-                },
-                "timeout": 10,
+                "local_host": "127.0.0.1",
+                "local_port": port,
+                "local_api": "ollama",
+                "local_model": "bge-m3",
+                "local_dimensions": 0,
+                "embedding_timeout": 10,
             }
         )
         probe = await instance._probe_embedding(local_cfg)
         expect_value(probe["dimension"] == VECTOR_DIM, "Ollama 探测维度")
 
         # 本机 OpenAI 兼容
-        local_cfg_openai = instance._merge_payload(
+        local_cfg_openai = plugin.Main._normalize_settings(
             {
                 "embedding_mode": "local",
-                "local": {
-                    "host": "127.0.0.1",
-                    "port": port,
-                    "api": "openai",
-                    "model": "bge-m3",
-                    "dimensions": 0,
-                },
-                "timeout": 10,
+                "local_host": "127.0.0.1",
+                "local_port": port,
+                "local_api": "openai",
+                "local_model": "bge-m3",
+                "local_dimensions": 0,
+                "embedding_timeout": 10,
             }
         )
         probe = await instance._probe_embedding(local_cfg_openai)
@@ -305,20 +294,17 @@ async def main() -> None:
             "Ollama base 不应带 /v1",
         )
 
-        # 空 key 保留已保存的 key
-        ctx.config = {}
-        instance.config = {"cloud_api_key": "saved-key"}
-        merged = instance._merge_payload(
+        # 配置页留空 key 时沿用已保存 provider 的 key
+        ctx.provider_manager.providers_config = [
             {
-                "embedding_mode": "cloud",
-                "cloud": {
-                    "api_base": "https://api.openai.com/v1",
-                    "api_key": "",
-                    "model": "text-embedding-3-small",
-                },
+                "id": plugin.MANAGED_PROVIDER_ID,
+                "embedding_api_key": "saved-key",
             }
+        ]
+        expect_value(
+            instance._effective_cloud_key({"cloud_api_key": ""}) == "saved-key",
+            "空 key 应保留已保存的 provider key",
         )
-        expect_value(merged["cloud_api_key"] == "saved-key", "空 key 应保留旧值")
 
         # 模型不同：默认拒绝
         ctx.kb_manager.helper = FakeKB(dimension=VECTOR_DIM, count=5, model="bge-m3")
@@ -383,7 +369,37 @@ async def main() -> None:
         expect_value(result["created_kb"] is True, "应自动创建知识库")
         expect_value(ctx.kb_manager.created is True, "create_kb 应被调用")
 
-        print(f"PASS: embedding console selftest ({VECTOR_DIM}-dim fake server)")
+        # 配置页保存 → 热重载 → 加载时自动应用
+        ctx.kb_manager.helper = FakeKB(dimension=VECTOR_DIM, count=0, model="")
+        ctx.provider_manager.providers_config = []
+        ctx.provider_manager.instance = None
+        instance.config = {
+            "embedding_mode": "local",
+            "local_host": "127.0.0.1",
+            "local_port": port,
+            "local_api": "ollama",
+            "local_model": "bge-m3",
+            "local_dimensions": 0,
+            "create_kb_if_missing": True,
+            "force_rebind": False,
+        }
+
+        async def _noop_save(cfg):
+            instance.config.update(cfg)
+
+        instance._save_settings_async = _noop_save
+        await instance._sync_embedding_from_config()
+        expect_value(
+            ctx.kb_manager.helper.kb.embedding_provider_id
+            == plugin.MANAGED_PROVIDER_ID,
+            "配置页加载时应把知识库绑定到 managed provider",
+        )
+        expect_value(
+            instance._settings()["local_dimensions"] == VECTOR_DIM,
+            "自动探测的维度应写回配置",
+        )
+
+        print(f"PASS: embedding config selftest ({VECTOR_DIM}-dim fake server)")
     finally:
         server.shutdown()
         server.server_close()
