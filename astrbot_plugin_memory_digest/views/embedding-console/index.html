@@ -16,9 +16,22 @@
             选择 embedding 来源，测试连通性，然后保存并绑定到记忆知识库。
           </p>
         </div>
-        <button id="refresh" class="ghost" type="button" data-i18n="refresh">
-          刷新状态
-        </button>
+        <div class="hero-actions">
+          <button
+            id="theme-toggle"
+            class="ghost theme-toggle"
+            type="button"
+            aria-label="切换深色模式"
+            title="切换深色模式"
+            aria-pressed="false"
+          >
+            <span id="theme-icon" class="theme-icon" aria-hidden="true">☾</span>
+            <span id="theme-label">深色</span>
+          </button>
+          <button id="refresh" class="ghost" type="button" data-i18n="refresh">
+            刷新状态
+          </button>
+        </div>
       </header>
 
       <section class="card status-card">

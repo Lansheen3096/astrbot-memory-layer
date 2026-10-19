@@ -5,6 +5,8 @@ const state = {
   status: null,
   mode: "kb",
   busy: false,
+  theme: "light",
+  manualTheme: false,
 };
 
 function t(key, fallback, vars) {
@@ -52,6 +54,39 @@ function refreshKeyPlaceholder() {
         mask: cloud.api_key_hint || "••••",
       })
     : t("key_placeholder", "留空则保持已保存的 Key");
+}
+
+function currentTheme() {
+  return document.documentElement.dataset.theme === "dark" ? "dark" : "light";
+}
+
+function applyTheme(theme, manual = false) {
+  const isDark = theme === "dark";
+  document.documentElement.dataset.theme = isDark ? "dark" : "light";
+  const icon = $("theme-icon");
+  const label = $("theme-label");
+  const toggle = $("theme-toggle");
+  if (icon) {
+    icon.textContent = isDark ? "☀" : "☾";
+  }
+  if (label) {
+    label.textContent = isDark
+      ? t("theme_dark", "深色")
+      : t("theme_light", "浅色");
+  }
+  if (toggle) {
+    toggle.setAttribute("aria-label", t("theme_toggle", "切换深色模式"));
+    toggle.setAttribute("title", t("theme_toggle", "切换深色模式"));
+    toggle.setAttribute("aria-pressed", isDark ? "true" : "false");
+  }
+  state.theme = isDark ? "dark" : "light";
+  if (manual) {
+    state.manualTheme = true;
+  }
+}
+
+function toggleTheme() {
+  applyTheme(currentTheme() === "dark" ? "light" : "dark", true);
 }
 
 function log(message) {
@@ -271,8 +306,9 @@ async function main() {
     return;
   }
 
+  let context = null;
   try {
-    await Promise.race([
+    context = await Promise.race([
       bridge.ready(),
       new Promise((_, reject) =>
         setTimeout(() => reject(new Error("bridge ready timeout")), 5000),
@@ -284,11 +320,19 @@ async function main() {
   }
 
   applyI18n();
+  const initialTheme =
+    typeof context?.isDark === "boolean"
+      ? context.isDark
+        ? "dark"
+        : "light"
+      : currentTheme();
+  applyTheme(initialTheme);
   setMode("kb");
 
   document.querySelectorAll("[data-mode]").forEach((button) => {
     button.addEventListener("click", () => setMode(button.dataset.mode));
   });
+  $("theme-toggle").addEventListener("click", toggleTheme);
   $("refresh").addEventListener("click", async () => {
     if (state.busy) {
       return;
@@ -317,8 +361,13 @@ async function main() {
     );
   }
 
-  bridge.onContext(() => {
+  bridge.onContext((nextContext) => {
     applyI18n();
+    if (!state.manualTheme && typeof nextContext?.isDark === "boolean") {
+      applyTheme(nextContext.isDark ? "dark" : "light");
+    } else {
+      applyTheme(state.theme || currentTheme());
+    }
   });
 }
 

@@ -87,6 +87,24 @@ body {
   min-width: 0;
 }
 
+.hero-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.theme-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.theme-icon {
+  font-size: 15px;
+  line-height: 1;
+}
+
 .eyebrow {
   margin: 0 0 6px;
   color: var(--accent);
@@ -432,6 +450,10 @@ button:disabled {
 
   .hero {
     flex-direction: column;
+  }
+
+  .hero-actions {
+    align-self: flex-start;
   }
 
   .hero .ghost {
