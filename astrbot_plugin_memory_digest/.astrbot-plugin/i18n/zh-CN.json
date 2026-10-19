@@ -1,0 +1,107 @@
+{
+  "metadata": {
+    "display_name": "记忆层 · 写入侧",
+    "short_desc": "把对话提炼成第一人称长期记忆，并自带 Embedding 控制台。",
+    "desc": "把对话提炼成 bot 的第一人称长期记忆，写进 AstrBot 知识库。三层分类（状态 / 偏好 / 事件）+ 置信度 + 余弦去重 + 来源校验。新增插件可视化视图「Embedding 控制台」。"
+  },
+  "config": {
+    "embedding_mode": {
+      "description": "Embedding 来源",
+      "labels": ["跟随知识库", "云端 API", "本机服务"]
+    },
+    "cloud_api_base": {
+      "description": "云端 API Base",
+      "hint": "例如 https://api.openai.com/v1；带不带 /v1 都会自动归一。"
+    },
+    "cloud_api_key": {
+      "description": "云端 API Key",
+      "hint": "只保存在本机配置里，不会通过控制台接口回显。"
+    },
+    "cloud_model": {
+      "description": "云端 Embedding 模型"
+    },
+    "cloud_dimensions": {
+      "description": "云端向量维度",
+      "hint": "0 表示保存时自动探测。"
+    },
+    "local_host": {
+      "description": "本机服务地址",
+      "hint": "容器部署时 127.0.0.1 指的是 AstrBot 容器自身。"
+    },
+    "local_port": {
+      "description": "本机服务端口"
+    },
+    "local_api": {
+      "description": "本机接口类型",
+      "labels": ["Ollama（/api/embed）", "OpenAI 兼容（/v1/embeddings）"]
+    },
+    "local_model": {
+      "description": "本机 Embedding 模型"
+    },
+    "local_dimensions": {
+      "description": "本机向量维度",
+      "hint": "0 表示保存时自动探测。"
+    },
+    "embedding_timeout": {
+      "description": "请求超时（秒）"
+    }
+  },
+  "views": {
+    "embedding-console": {
+      "title": "Embedding 控制台",
+      "description": "配置记忆层使用的 embedding：云端 API 或本机监听端口。",
+      "eyebrow": "MEMORY LAYER",
+      "subtitle": "选择 embedding 来源，测试连通性，然后保存并绑定到记忆知识库。",
+      "refresh": "刷新状态",
+      "status_title": "运行状态",
+      "source_title": "Embedding 来源",
+      "log_title": "执行记录",
+      "status_kb": "知识库",
+      "status_provider": "Embedding Provider",
+      "status_model": "模型",
+      "status_dim": "向量维度",
+      "status_docs": "条目数",
+      "status_pending": "待整理会话",
+      "status_loaded": "已加载",
+      "status_missing": "不存在",
+      "status_managed": "由本插件管理",
+      "status_unmanaged": "外部配置",
+      "status_none": "未配置",
+      "mode_kb": "跟随知识库",
+      "mode_cloud": "云端 API",
+      "mode_local": "本机服务",
+      "mode_kb_hint": "不修改知识库的 embedding provider，记忆层直接使用知识库当前配置。",
+      "cloud_api_base": "API Base",
+      "cloud_api_key": "API Key",
+      "cloud_model": "模型",
+      "cloud_dimensions": "向量维度",
+      "local_host": "监听地址",
+      "local_port": "端口",
+      "local_api": "接口类型",
+      "local_model": "模型",
+      "local_dimensions": "向量维度",
+      "timeout": "请求超时（秒）",
+      "dimensions_hint": "留 0 或留空表示保存时自动探测。",
+      "key_placeholder": "留空则保持已保存的 Key",
+      "key_saved": "已保存（{mask}），留空保持不变",
+      "create_kb": "知识库不存在时自动创建",
+      "force": "我已知晓：已有记忆可能检索异常，仍要切换 embedding 模型（同维度）",
+      "force_hint": "只在模型变更且维度一致时需要勾选。维度不一致会被直接拒绝。",
+      "test": "测试连接",
+      "save": "保存并应用",
+      "testing": "正在测试……",
+      "saving": "正在保存并绑定……",
+      "log_ready": "填写参数后可以先测试连接，再保存。保存会创建/更新 AstrBot 的 embedding provider，并把记忆知识库绑定过去。",
+      "refresh_ok": "状态已刷新。",
+      "test_ok": "连接正常：{model}，维度 {dim}，耗时 {ms} ms。",
+      "save_ok": "已保存并应用：{message}",
+      "error_prefix": "失败：{message}",
+      "local_hint": "容器部署时，127.0.0.1 是 AstrBot 容器自身。宿主机服务请填宿主机的 Docker 网桥地址（例如 172.19.0.1）或 host.docker.internal。",
+      "advanced": "高级",
+      "api_key_note": "Key 只写入本机 AstrBot 配置，不会通过接口回显。",
+      "kb_bound": "已绑定 {provider}",
+      "unknown": "未知",
+      "saved": "已保存"
+    }
+  }
+}

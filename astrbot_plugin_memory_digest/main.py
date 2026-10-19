@@ -7,6 +7,10 @@
     /记住        手动跑一次提炼
     /记住状态    看进度（处理到哪了、库里有多少条）
 
+插件控制台（AstrBot >= 4.29）：
+    views/embedding-console/  选择「跟随知识库 / 云端 API / 本机服务」，
+    保存时创建/更新 memory_layer_embedding 并绑定记忆知识库。
+
 设计要点：
   - 每条记忆单独成一个 chunk，检索时捞出来的就是一句完整的回忆
   - 用 AstrBot 自己配置的模型提炼（独立 session_id，不污染主对话）
@@ -24,19 +28,60 @@ import datetime
 import json
 import math
 import re
+import shutil
 import sqlite3
 import time
 import traceback
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
+
+import aiohttp
 
 from astrbot.api import logger, star
 from astrbot.api.event import AstrMessageEvent, filter
+from astrbot.core.utils.astrbot_path import (
+    get_astrbot_data_path,
+    get_astrbot_knowledge_base_path,
+    get_astrbot_plugin_data_path,
+)
 
-DATA_DIR = Path("/AstrBot/data")
+try:  # AstrBot >= 4.29: 插件可视化视图 / 插件 Web API
+    from astrbot.api.web import error_response, json_response, request
+
+    WEB_API_AVAILABLE = True
+except Exception:  # pragma: no cover - 老版本只是没有控制台入口
+    WEB_API_AVAILABLE = False
+    error_response = json_response = request = None
+
+PLUGIN_NAME = "astrbot_plugin_memory_digest"
+PLUGIN_VERSION = "0.2.0"
+
+DATA_DIR = Path(get_astrbot_data_path())
 DB_PATH = DATA_DIR / "data_v4.db"
-KB_ROOT = DATA_DIR / "knowledge_base"
-STATE_PATH = DATA_DIR / "memory_digest_state.json"
+KB_ROOT = Path(get_astrbot_knowledge_base_path())
+PLUGIN_DATA_DIR = Path(get_astrbot_plugin_data_path()) / PLUGIN_NAME
+STATE_PATH = PLUGIN_DATA_DIR / "state.json"
+LEGACY_STATE_PATH = DATA_DIR / "memory_digest_state.json"
 KB_NAME = "长期记忆"   # ★ 必须和 astrbot_plugin_memory_recall 里的一致
+
+# 控制台创建/维护的 AstrBot embedding provider。固定 ID 便于重复保存时原地更新，
+# 也不会和用户手工创建的 provider 抢名字。
+MANAGED_PROVIDER_ID = "memory_layer_embedding"
+EMBEDDING_MODES = ("kb", "cloud", "local")
+DEFAULT_SETTINGS = {
+    "embedding_mode": "kb",
+    "cloud_api_base": "",
+    "cloud_api_key": "",
+    "cloud_model": "text-embedding-3-small",
+    "cloud_dimensions": 0,
+    "local_host": "127.0.0.1",
+    "local_port": 11434,
+    "local_api": "ollama",
+    "local_model": "bge-m3",
+    "local_dimensions": 0,
+    "embedding_timeout": 60,
+}
+SETTINGS_FILE = PLUGIN_DATA_DIR / "embedding_settings.json"
 
 # 时间锚：上游把【收到用户消息的那一刻】写成 <system_reminder> 附在 user 消息里
 #（本仓库的 astrbot-reply-rhythm / pacer 就干这个；没有也能跑）
@@ -252,9 +297,51 @@ def _load_existing_texts(kb_id: str) -> list[str]:
 
 
 class Main(star.Star):
-    def __init__(self, context: star.Context) -> None:
-        self.context = context
+    def __init__(self, context: star.Context, config=None) -> None:
+        super().__init__(context, config)
+        self.config = config
         self._daily_task: asyncio.Task | None = None
+        self._embedding_lock = asyncio.Lock()
+        self._register_web_apis()
+
+    def _register_web_apis(self) -> None:
+        """注册插件控制台用的后端 API。
+
+        AstrBot >= 4.29 才提供 `astrbot.api.web`。老版本照常跑提炼/注入，
+        只是没有控制台入口（日志里会留一行提示）。
+        """
+        if not WEB_API_AVAILABLE:
+            logger.warning(
+                "[记忆] 当前 AstrBot 没有 astrbot.api.web，Embedding 控制台不可用；"
+                "提炼与注入不受影响。"
+            )
+            return
+        register = getattr(self.context, "register_web_api", None)
+        if not callable(register):
+            logger.warning("[记忆] context.register_web_api 不可用，跳过控制台 API 注册")
+            return
+        routes = (
+            (
+                f"/{PLUGIN_NAME}/status",
+                self.api_status,
+                ["GET"],
+                "Memory layer embedding console status",
+            ),
+            (
+                f"/{PLUGIN_NAME}/test",
+                self.api_test_embedding,
+                ["POST"],
+                "Probe an embedding endpoint without saving",
+            ),
+            (
+                f"/{PLUGIN_NAME}/save",
+                self.api_save_embedding,
+                ["POST"],
+                "Save embedding settings and bind the knowledge base",
+            ),
+        )
+        for route, handler, methods, desc in routes:
+            register(route, handler, methods, desc)
 
     # ───────────────────── 定时 ─────────────────────
 
@@ -292,9 +379,19 @@ class Main(star.Star):
     # ───────────────────── 状态 ─────────────────────
 
     def _load_state(self) -> dict:
-        if STATE_PATH.exists():
+        # 兼容旧位置：之前写在 data/memory_digest_state.json。
+        # 只迁移一次；新位置按文档要求放到 data/plugin_data/<plugin>/ 下。
+        if not STATE_PATH.exists() and LEGACY_STATE_PATH.exists():
             try:
-                data = json.loads(STATE_PATH.read_text(encoding="utf-8"))
+                PLUGIN_DATA_DIR.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(LEGACY_STATE_PATH, STATE_PATH)
+                logger.info("[记忆] 进度文件已迁移到 %s", STATE_PATH)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[记忆] 迁移旧进度文件失败（继续用旧文件）：%s", exc)
+        path = STATE_PATH if STATE_PATH.exists() else LEGACY_STATE_PATH
+        if path.exists():
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
                 if isinstance(data, dict) and isinstance(data.get("processed"), dict):
                     return data
             except Exception:
@@ -302,9 +399,12 @@ class Main(star.Star):
         return {"processed": {}}
 
     def _save_state(self, state: dict) -> None:
-        STATE_PATH.write_text(
+        PLUGIN_DATA_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = STATE_PATH.with_suffix(".tmp")
+        tmp.write_text(
             json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8"
         )
+        tmp.replace(STATE_PATH)
 
     # ───────────────────── 读对话 ─────────────────────
 
@@ -756,6 +856,818 @@ class Main(star.Star):
             msg += f"\n有 {len(skipped)} 段失败了：{', '.join(skipped)}（日志里有详情）"
         return msg
 
+    # ───────────────────── Embedding 控制台 ─────────────────────
+
+    @staticmethod
+    def _to_int(value, default: int = 0) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _normalize_settings(raw: dict | None) -> dict:
+        out = dict(DEFAULT_SETTINGS)
+        if isinstance(raw, dict):
+            out.update({k: v for k, v in raw.items() if k in DEFAULT_SETTINGS})
+        mode = str(out.get("embedding_mode") or "kb").strip().lower()
+        out["embedding_mode"] = mode if mode in EMBEDDING_MODES else "kb"
+        out["cloud_api_base"] = str(out.get("cloud_api_base") or "").strip()
+        out["cloud_api_key"] = str(out.get("cloud_api_key") or "").strip()
+        out["cloud_model"] = str(out.get("cloud_model") or "").strip()
+        out["cloud_dimensions"] = max(0, Main._to_int(out.get("cloud_dimensions"), 0))
+        out["local_host"] = str(out.get("local_host") or "127.0.0.1").strip()
+        out["local_port"] = min(
+            65535, max(1, Main._to_int(out.get("local_port"), 11434))
+        )
+        local_api = str(out.get("local_api") or "ollama").strip().lower()
+        out["local_api"] = local_api if local_api in ("ollama", "openai") else "ollama"
+        out["local_model"] = str(out.get("local_model") or "").strip()
+        out["local_dimensions"] = max(0, Main._to_int(out.get("local_dimensions"), 0))
+        out["embedding_timeout"] = min(
+            300, max(5, Main._to_int(out.get("embedding_timeout"), 60))
+        )
+        return out
+
+    def _fallback_settings(self) -> dict:
+        if SETTINGS_FILE.exists():
+            try:
+                data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    return data
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[记忆] 控制台设置文件损坏，忽略：%s", exc)
+        return {}
+
+    def _settings(self) -> dict:
+        raw: dict = {}
+        if isinstance(self.config, dict):
+            raw.update(
+                {k: self.config[k] for k in DEFAULT_SETTINGS if k in self.config}
+            )
+        if not raw:
+            raw.update(self._fallback_settings())
+        return self._normalize_settings(raw)
+
+    async def _save_settings_async(self, cfg: dict) -> None:
+        cfg = self._normalize_settings(cfg)
+        if isinstance(self.config, dict):
+            for key in DEFAULT_SETTINGS:
+                self.config[key] = cfg[key]
+            save_async = getattr(self.config, "save_config_async", None)
+            if callable(save_async):
+                ok = await save_async()
+                if ok is False:
+                    logger.warning("[记忆] 配置保存被更新的快照覆盖，请刷新控制台确认")
+                return
+            save = getattr(self.config, "save_config", None)
+            if callable(save):
+                save()
+                return
+        # 没有插件配置对象时（例如测试环境），退回到插件数据目录里的 JSON。
+        PLUGIN_DATA_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = SETTINGS_FILE.with_suffix(".tmp")
+        tmp.write_text(
+            json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        tmp.replace(SETTINGS_FILE)
+
+    @staticmethod
+    def _mask_secret(value: str) -> str:
+        value = (value or "").strip()
+        if not value:
+            return ""
+        if len(value) <= 4:
+            return "••••"
+        return "••••" + value[-4:]
+
+    def _provider_configs(self) -> list[dict]:
+        manager = getattr(self.context, "provider_manager", None)
+        rows = getattr(manager, "providers_config", None) if manager else None
+        return rows if isinstance(rows, list) else []
+
+    def _managed_provider_config(self) -> dict | None:
+        for item in self._provider_configs():
+            if isinstance(item, dict) and item.get("id") == MANAGED_PROVIDER_ID:
+                return dict(item)
+        return None
+
+    def _public_settings(self, cfg: dict | None = None) -> dict:
+        cfg = cfg or self._settings()
+        existing = self._managed_provider_config() or {}
+        has_key = bool(cfg["cloud_api_key"] or existing.get("embedding_api_key"))
+        return {
+            "embedding_mode": cfg["embedding_mode"],
+            "cloud": {
+                "api_base": cfg["cloud_api_base"],
+                "model": cfg["cloud_model"],
+                "dimensions": cfg["cloud_dimensions"],
+                "api_key_set": has_key,
+                "api_key_hint": self._mask_secret(
+                    cfg["cloud_api_key"]
+                    or str(existing.get("embedding_api_key") or "")
+                ),
+            },
+            "local": {
+                "host": cfg["local_host"],
+                "port": cfg["local_port"],
+                "api": cfg["local_api"],
+                "model": cfg["local_model"],
+                "dimensions": cfg["local_dimensions"],
+            },
+            "timeout": cfg["embedding_timeout"],
+        }
+
+    def _merge_payload(self, payload: dict) -> dict:
+        if not isinstance(payload, dict):
+            raise ValueError("请求体必须是 JSON 对象")
+        mode = str(
+            payload.get("embedding_mode") or payload.get("mode") or "kb"
+        ).strip().lower()
+        if mode not in EMBEDDING_MODES:
+            raise ValueError("embedding_mode 只能是 kb / cloud / local")
+
+        cfg = self._settings()
+        cfg["embedding_mode"] = mode
+
+        cloud = payload.get("cloud")
+        if isinstance(cloud, dict):
+            if "api_base" in cloud:
+                cfg["cloud_api_base"] = str(cloud.get("api_base") or "").strip()
+            if "model" in cloud:
+                cfg["cloud_model"] = str(cloud.get("model") or "").strip()
+            if "dimensions" in cloud:
+                cfg["cloud_dimensions"] = max(
+                    0, self._to_int(cloud.get("dimensions"), 0)
+                )
+            key = cloud.get("api_key")
+            if isinstance(key, str) and key.strip():
+                cfg["cloud_api_key"] = key.strip()
+
+        local = payload.get("local")
+        if isinstance(local, dict):
+            if "host" in local:
+                cfg["local_host"] = str(local.get("host") or "").strip()
+            if "port" in local:
+                cfg["local_port"] = self._to_int(
+                    local.get("port"), cfg["local_port"]
+                )
+            if "api" in local:
+                cfg["local_api"] = str(local.get("api") or "").strip().lower()
+            if "model" in local:
+                cfg["local_model"] = str(local.get("model") or "").strip()
+            if "dimensions" in local:
+                cfg["local_dimensions"] = max(
+                    0, self._to_int(local.get("dimensions"), 0)
+                )
+
+        timeout = payload.get("timeout", payload.get("embedding_timeout"))
+        if timeout is not None:
+            cfg["embedding_timeout"] = self._to_int(
+                timeout, cfg["embedding_timeout"]
+            )
+
+        cfg = self._normalize_settings(cfg)
+        if mode == "cloud":
+            cfg["cloud_api_base"] = self._validate_http_url(
+                cfg["cloud_api_base"], "云端 API Base"
+            )
+            if not cfg["cloud_model"]:
+                raise ValueError("云端 Embedding 模型不能为空")
+        elif mode == "local":
+            cfg["local_host"], cfg["local_port"] = self._normalize_local_target(
+                cfg["local_host"], cfg["local_port"]
+            )
+            if not cfg["local_model"]:
+                raise ValueError("本机 Embedding 模型不能为空")
+        return cfg
+
+    @staticmethod
+    def _validate_http_url(raw: str, field: str) -> str:
+        raw = (raw or "").strip()
+        if not raw:
+            raise ValueError(f"{field} 不能为空")
+        parsed = urlsplit(raw)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            raise ValueError(f"{field} 必须是 http(s) URL")
+        return raw
+
+    @staticmethod
+    def _normalize_local_target(host_raw, port_raw) -> tuple[str, int]:
+        raw = str(host_raw or "").strip()
+        if not raw:
+            raise ValueError("本机服务地址不能为空")
+        port = Main._to_int(port_raw, 0)
+        host = raw
+        if "://" in raw:
+            parsed = urlsplit(raw)
+            host = parsed.hostname or ""
+            if parsed.port:
+                port = parsed.port
+        else:
+            try:
+                parsed = urlsplit("//" + raw)
+                host = parsed.hostname or raw
+                if parsed.port:
+                    port = parsed.port
+            except ValueError:
+                host = raw
+        host = host.strip()
+        if not host or "/" in host or "\\" in host:
+            raise ValueError("本机服务地址不合法")
+        if not (1 <= port <= 65535):
+            raise ValueError("端口必须在 1~65535")
+        return host, port
+
+    @staticmethod
+    def _http_authority(host: str, port: int) -> str:
+        host = host.strip()
+        if host.startswith("[") and host.endswith("]"):
+            host = host[1:-1]
+        if ":" in host:
+            host = f"[{host}]"
+        return f"{host}:{port}"
+
+    @staticmethod
+    def _openai_base(raw: str) -> str:
+        base = (raw or "").strip().rstrip("/")
+        if base.endswith("/embeddings"):
+            base = base[: -len("/embeddings")]
+        if not re.search(r"/v\d+$", base):
+            base += "/v1"
+        return base
+
+    @staticmethod
+    def _redact_url(url: str) -> str:
+        try:
+            parsed = urlsplit(url)
+            netloc = parsed.netloc
+            if "@" in netloc:  # 不把 URL 里的 userinfo/凭据带进日志和回执
+                netloc = netloc.rsplit("@", 1)[-1]
+            return urlunsplit((parsed.scheme, netloc, parsed.path, "", ""))
+        except Exception:
+            return url
+
+    def _http_proxy(self) -> str | None:
+        try:
+            conf = self.context.get_config()
+            proxy = str(conf.get("http_proxy") or "").strip()
+            if proxy:
+                return proxy
+        except Exception:  # noqa: BLE001
+            pass
+        return None
+
+    def _effective_cloud_key(self, cfg: dict) -> str:
+        key = str(cfg.get("cloud_api_key") or "").strip()
+        if key:
+            return key
+        existing = self._managed_provider_config() or {}
+        return str(existing.get("embedding_api_key") or "").strip()
+
+    async def _probe_embedding(self, cfg: dict) -> dict:
+        mode = cfg["embedding_mode"]
+        timeout = int(cfg["embedding_timeout"])
+        headers: dict[str, str] = {}
+        proxy = None
+        key = ""
+
+        if mode == "cloud":
+            model = cfg["cloud_model"]
+            base = self._openai_base(
+                self._validate_http_url(cfg["cloud_api_base"], "云端 API Base")
+            )
+            url = base + "/embeddings"
+            key = self._effective_cloud_key(cfg) or "not-needed"
+            headers["Authorization"] = f"Bearer {key}"
+            proxy = self._http_proxy()
+            payload = {"model": model, "input": ["memory layer connectivity test"]}
+        elif mode == "local":
+            model = cfg["local_model"]
+            host, port = self._normalize_local_target(
+                cfg["local_host"], cfg["local_port"]
+            )
+            authority = self._http_authority(host, port)
+            if cfg["local_api"] == "ollama":
+                url = f"http://{authority}/api/embed"
+                payload = {
+                    "model": model,
+                    "input": ["memory layer connectivity test"],
+                }
+            else:
+                url = f"http://{authority}/v1/embeddings"
+                headers["Authorization"] = "Bearer not-needed"
+                payload = {
+                    "model": model,
+                    "input": ["memory layer connectivity test"],
+                }
+        else:
+            raise ValueError("当前是「跟随知识库」，没有可测试的自定义端点")
+
+        started = time.monotonic()
+        try:
+            async with aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=timeout)
+            ) as session:
+                async with session.post(
+                    url, json=payload, headers=headers, proxy=proxy
+                ) as resp:
+                    status = resp.status
+                    body = await resp.text()
+        except asyncio.TimeoutError as exc:
+            raise ValueError(
+                f"连接超时（{timeout}s）：{self._redact_url(url)}"
+            ) from exc
+        except aiohttp.ClientError as exc:
+            raise ValueError(
+                f"连接失败：{self._redact_url(url)}：{exc}"
+            ) from exc
+
+        if status != 200:
+            safe_body = body.replace(key, "***") if key else body
+            raise ValueError(f"HTTP {status}：{safe_body[:300]}")
+        try:
+            data = json.loads(body)
+        except Exception as exc:  # noqa: BLE001
+            raise ValueError("返回内容不是 JSON") from exc
+
+        vec = None
+        if mode == "local" and cfg["local_api"] == "ollama":
+            embeddings = data.get("embeddings")
+            if isinstance(embeddings, list) and embeddings:
+                vec = embeddings[0]
+            elif isinstance(data.get("embedding"), list):
+                vec = data["embedding"]
+        else:
+            data_rows = data.get("data")
+            if (
+                isinstance(data_rows, list)
+                and data_rows
+                and isinstance(data_rows[0], dict)
+            ):
+                vec = data_rows[0].get("embedding")
+            elif isinstance(data.get("embeddings"), list) and data["embeddings"]:
+                vec = data["embeddings"][0]
+
+        if not isinstance(vec, list) or not vec:
+            safe_body = body.replace(key, "***") if key else body
+            raise ValueError(f"返回里没有 embedding 向量：{safe_body[:200]}")
+        dimension = len(vec)
+        if dimension <= 0:
+            raise ValueError("返回的 embedding 向量为空")
+
+        latency = int((time.monotonic() - started) * 1000)
+        logger.info(
+            "[记忆] Embedding 探测成功：mode=%s model=%s dim=%d %dms",
+            mode,
+            model,
+            dimension,
+            latency,
+        )
+        return {
+            "mode": mode,
+            "model": model,
+            "dimension": dimension,
+            "latency_ms": latency,
+            "endpoint": self._redact_url(url),
+        }
+
+    def _build_provider_config(self, cfg: dict, dimension: int) -> dict:
+        mode = cfg["embedding_mode"]
+        key = ""
+        if mode == "cloud":
+            provider_type = "openai_embedding"
+            base = cfg["cloud_api_base"]
+            model = cfg["cloud_model"]
+            key = self._effective_cloud_key(cfg) or "not-needed"
+        elif mode == "local":
+            host, port = self._normalize_local_target(
+                cfg["local_host"], cfg["local_port"]
+            )
+            authority = self._http_authority(host, port)
+            model = cfg["local_model"]
+            if cfg["local_api"] == "ollama":
+                provider_type = "ollama_embedding"
+                base = f"http://{authority}"
+            else:
+                provider_type = "openai_embedding"
+                base = f"http://{authority}/v1"
+                key = "not-needed"
+        else:
+            raise ValueError("跟随知识库模式不需要创建 provider")
+
+        provider = {
+            "id": MANAGED_PROVIDER_ID,
+            "type": provider_type,
+            "provider_type": "embedding",
+            "enable": True,
+            "embedding_api_base": base,
+            "embedding_model": model,
+            "embedding_dimensions": int(dimension),
+            "timeout": int(cfg["embedding_timeout"]),
+        }
+        if provider_type == "openai_embedding":
+            provider["embedding_api_key"] = key
+        if mode == "cloud":
+            proxy = self._http_proxy()
+            if proxy:
+                provider["proxy"] = proxy
+        return provider
+
+    def _provider_rows(self, kind: str) -> list[dict]:
+        rows: list[dict] = []
+        for item in self._provider_configs():
+            if not isinstance(item, dict):
+                continue
+            ptype = str(item.get("type") or "")
+            pkind = str(item.get("provider_type") or "")
+            matched = ptype.endswith(f"_{kind}") or pkind == kind
+            if kind == "embedding":
+                matched = matched or ptype.endswith("embedding")
+            if not matched:
+                continue
+            rows.append(
+                {
+                    "id": item.get("id") or "",
+                    "type": ptype,
+                    "model": item.get("embedding_model")
+                    or item.get("model")
+                    or "",
+                    "base": item.get("embedding_api_base")
+                    or item.get("api_base")
+                    or "",
+                }
+            )
+        return rows
+
+    def _first_rerank_id(self) -> str | None:
+        manager = getattr(self.context, "provider_manager", None)
+        for inst in getattr(manager, "rerank_provider_insts", []) or []:
+            try:
+                meta = inst.meta()
+                provider_id = getattr(meta, "id", None)
+            except Exception:  # noqa: BLE001
+                provider_id = None
+            if provider_id:
+                return str(provider_id)
+        for item in self._provider_configs():
+            if not isinstance(item, dict):
+                continue
+            ptype = str(item.get("type") or "")
+            if ptype.endswith("rerank") or item.get("provider_type") == "rerank":
+                if item.get("id"):
+                    return str(item["id"])
+        return None
+
+    async def _check_rebind_safe(
+        self, helper, dimension: int, provider_cfg: dict, force: bool
+    ) -> None:
+        doc_count = 0
+        index_dim = 0
+        try:
+            vec_db = getattr(helper, "vec_db", None)
+            if vec_db is not None:
+                doc_count = int(await vec_db.count_documents())
+                index = getattr(vec_db.embedding_storage, "index", None)
+                index_dim = int(getattr(index, "d", 0) or 0)
+                if not index_dim:
+                    index_dim = int(
+                        getattr(vec_db.embedding_storage, "dimension", 0) or 0
+                    )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[记忆] 读取知识库向量信息失败：%s", exc)
+
+        if doc_count <= 0:
+            return
+        if not index_dim:
+            raise ValueError(
+                f"知识库已有 {doc_count} 条条目，但读不到现有向量索引的维度，"
+                "无法安全切换。请新建一个知识库，或先修复/重建现有索引。"
+            )
+        if dimension != index_dim:
+            raise ValueError(
+                f"知识库已有 {doc_count} 条向量，现有索引维度是 {index_dim}，"
+                f"而新 embedding 返回 {dimension} 维。维度不同会直接损坏检索；"
+                "请新建一个知识库，或清空旧条目后再切换。"
+            )
+
+        current_model = ""
+        try:
+            ep = await helper.get_ep()
+            current_model = str(
+                getattr(ep, "model", "")
+                or (getattr(ep, "provider_config", {}) or {}).get("embedding_model")
+                or ""
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[记忆] 读取知识库当前 embedding 模型失败：%s", exc)
+
+        new_model = str(provider_cfg.get("embedding_model") or "")
+        if (
+            current_model
+            and new_model
+            and current_model != new_model
+            and not force
+        ):
+            raise ValueError(
+                f"知识库已有 {doc_count} 条记忆，当前模型是 {current_model}，"
+                f"新模型是 {new_model}。不同模型即使维度相同也不在同一向量空间；"
+                "确认要切换请勾选「强制切换」（旧记忆可能检索异常），或新建知识库。"
+            )
+        if (
+            not current_model
+            and helper.kb.embedding_provider_id != MANAGED_PROVIDER_ID
+            and not force
+        ):
+            raise ValueError(
+                "无法确认当前知识库使用的 embedding 模型；确认切换请勾选"
+                "「强制切换」，或新建知识库。"
+            )
+
+    async def _upsert_managed_provider(self, provider_cfg: dict) -> None:
+        manager = getattr(self.context, "provider_manager", None)
+        if manager is None:
+            raise ValueError("拿不到 AstrBot provider_manager，无法创建 embedding provider")
+        if self._managed_provider_config():
+            await manager.update_provider(MANAGED_PROVIDER_ID, provider_cfg)
+        else:
+            await manager.create_provider(provider_cfg)
+        instance = await manager.get_provider_by_id(MANAGED_PROVIDER_ID)
+        if instance is None:
+            raise ValueError(
+                "embedding provider 创建后没有加载成功，请查看 AstrBot 日志"
+            )
+        got_dim = self._to_int(getattr(instance, "get_dim", lambda: 0)(), 0)
+        if got_dim and got_dim != int(provider_cfg["embedding_dimensions"]):
+            raise ValueError(
+                f"provider 维度 {got_dim} 与探测维度 "
+                f"{provider_cfg['embedding_dimensions']} 不一致"
+            )
+
+    async def _apply_embedding(
+        self,
+        cfg: dict,
+        provider_cfg: dict,
+        dimension: int,
+        *,
+        force: bool,
+        create_kb: bool,
+    ) -> dict:
+        kb_manager = self.context.kb_manager
+        helper = await kb_manager.get_kb_by_name(KB_NAME)
+        warnings: list[str] = []
+
+        if helper is None and not create_kb:
+            raise ValueError(
+                f"找不到知识库「{KB_NAME}」。请先在 WebUI 创建，"
+                "或勾选「知识库不存在时自动创建」。"
+            )
+        if helper is not None:
+            await self._check_rebind_safe(helper, dimension, provider_cfg, force)
+
+        await self._upsert_managed_provider(provider_cfg)
+
+        created = False
+        if helper is None:
+            rerank_id = self._first_rerank_id()
+            helper = await kb_manager.create_kb(
+                kb_name=KB_NAME,
+                description="长期记忆（由 Memory Layer 控制台创建）",
+                embedding_provider_id=MANAGED_PROVIDER_ID,
+                rerank_provider_id=rerank_id,
+            )
+            created = True
+            if not rerank_id:
+                warnings.append(
+                    "知识库没有可用的 rerank provider，注入侧本轮只会给状态层；"
+                    "请到 AstrBot 知识库设置里补一个 rerank provider。"
+                )
+        else:
+            updated = await kb_manager.update_kb(
+                kb_id=helper.kb.kb_id,
+                kb_name=helper.kb.kb_name,
+                embedding_provider_id=MANAGED_PROVIDER_ID,
+                rerank_provider_id=helper.kb.rerank_provider_id,
+            )
+            if updated is None:
+                raise ValueError("知识库更新失败，请查看 AstrBot 日志")
+            if getattr(updated, "init_error", None):
+                raise ValueError(
+                    f"知识库重新初始化失败：{updated.init_error}"
+                )
+            helper = updated
+
+        ep = await helper.get_ep()
+        vector = await ep.get_embedding("memory layer binding check")
+        if len(vector) != dimension:
+            raise ValueError(
+                f"绑定后 provider 返回 {len(vector)} 维，与探测的 {dimension} 维不一致"
+            )
+
+        action = "已创建知识库并绑定" if created else "已更新知识库绑定"
+        message = (
+            f"{action}：{MANAGED_PROVIDER_ID}（{provider_cfg['embedding_model']}"
+            f" / {dimension} 维）"
+        )
+        logger.info("[记忆] %s", message)
+        return {
+            "message": message,
+            "created_kb": created,
+            "warnings": warnings,
+        }
+
+    async def _kb_snapshot(self) -> dict:
+        snapshot: dict = {
+            "name": KB_NAME,
+            "exists": False,
+            "kb_id": "",
+            "embedding_provider_id": "",
+            "embedding_model": "",
+            "embedding_base": "",
+            "vector_dim": 0,
+            "doc_count": 0,
+            "rerank_provider_id": "",
+            "managed_by_plugin": False,
+        }
+        helper = await self.context.kb_manager.get_kb_by_name(KB_NAME)
+        if helper is None:
+            return snapshot
+
+        snapshot["exists"] = True
+        snapshot["kb_id"] = helper.kb.kb_id
+        snapshot["embedding_provider_id"] = helper.kb.embedding_provider_id or ""
+        snapshot["rerank_provider_id"] = helper.kb.rerank_provider_id or ""
+        snapshot["managed_by_plugin"] = (
+            helper.kb.embedding_provider_id == MANAGED_PROVIDER_ID
+        )
+        try:
+            vec_db = getattr(helper, "vec_db", None)
+            if vec_db is not None:
+                snapshot["doc_count"] = int(await vec_db.count_documents())
+                index = getattr(vec_db.embedding_storage, "index", None)
+                snapshot["vector_dim"] = int(getattr(index, "d", 0) or 0)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[记忆] 读取知识库条目数失败：%s", exc)
+
+        try:
+            ep = await helper.get_ep()
+            snapshot["embedding_model"] = str(
+                getattr(ep, "model", "")
+                or (getattr(ep, "provider_config", {}) or {}).get("embedding_model")
+                or ""
+            )
+            snapshot["embedding_base"] = str(
+                (getattr(ep, "provider_config", {}) or {}).get(
+                    "embedding_api_base"
+                )
+                or getattr(ep, "base_url", "")
+                or ""
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[记忆] 读取知识库 embedding provider 失败：%s", exc)
+        return snapshot
+
+    def _digest_snapshot(self) -> dict:
+        state = self._load_state()
+        processed = state.get("processed") or {}
+        pending = 0
+        try:
+            for conv_id, raw in self._read_conversations():
+                try:
+                    total = len(json.loads(raw))
+                except Exception:
+                    continue
+                if int(processed.get(conv_id) or 0) < total:
+                    pending += 1
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[记忆] 读取会话进度失败：%s", exc)
+        return {
+            "processed_conversations": len(processed),
+            "pending_conversations": pending,
+            "state_file": str(STATE_PATH),
+        }
+
+    async def _status_payload(self) -> dict:
+        return {
+            "plugin": {"name": PLUGIN_NAME, "version": PLUGIN_VERSION},
+            "config": self._public_settings(),
+            "kb": await self._kb_snapshot(),
+            "providers": {
+                "embedding": self._provider_rows("embedding"),
+                "rerank": self._provider_rows("rerank"),
+            },
+            "digest": self._digest_snapshot(),
+            "web_api": WEB_API_AVAILABLE,
+        }
+
+    async def api_status(self):
+        """GET /<plugin>/status：控制台首屏需要的全部运行状态。"""
+        try:
+            return json_response(await self._status_payload())
+        except Exception as exc:  # noqa: BLE001
+            logger.error("[记忆] 控制台状态读取失败：%s\n%s", exc, traceback.format_exc())
+            return error_response(f"读取状态失败：{exc}", status_code=500)
+
+    async def api_test_embedding(self):
+        """POST /<plugin>/test：只探测，不保存、不改知识库。"""
+        try:
+            payload = await request.json(default={})
+            cfg = self._merge_payload(payload)
+            if cfg["embedding_mode"] == "kb":
+                return json_response(
+                    {
+                        "mode": "kb",
+                        "message": "当前是「跟随知识库」模式，不需要测试自定义端点。",
+                        "kb": await self._kb_snapshot(),
+                    }
+                )
+            probe = await self._probe_embedding(cfg)
+            declared = (
+                cfg["cloud_dimensions"]
+                if cfg["embedding_mode"] == "cloud"
+                else cfg["local_dimensions"]
+            )
+            warnings = []
+            if declared and declared != probe["dimension"]:
+                warnings.append(
+                    f"填写的是 {declared} 维，实际探测到 {probe['dimension']} 维；"
+                    "保存时会以实际探测值为准。"
+                )
+            return json_response({**probe, "warnings": warnings})
+        except ValueError as exc:
+            return error_response(str(exc), status_code=400)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("[记忆] 控制台测试失败：%s\n%s", exc, traceback.format_exc())
+            return error_response(f"测试失败：{exc}", status_code=500)
+
+    async def api_save_embedding(self):
+        """POST /<plugin>/save：保存设置，必要时创建/更新 provider 并绑定知识库。"""
+        try:
+            payload = await request.json(default={})
+            cfg = self._merge_payload(payload)
+            if cfg["embedding_mode"] == "kb":
+                await self._save_settings_async(cfg)
+                return json_response(
+                    {
+                        "ok": True,
+                        "message": "已切换为「跟随知识库」，没有修改知识库绑定。",
+                        "status": await self._status_payload(),
+                    }
+                )
+
+            probe = await self._probe_embedding(cfg)
+            dimension = int(probe["dimension"])
+            cfg[
+                "cloud_dimensions"
+                if cfg["embedding_mode"] == "cloud"
+                else "local_dimensions"
+            ] = dimension
+            provider_cfg = self._build_provider_config(cfg, dimension)
+
+            force = bool(payload.get("force"))
+            create_kb = bool(payload.get("create_kb", True))
+            async with self._embedding_lock:
+                result = await self._apply_embedding(
+                    cfg,
+                    provider_cfg,
+                    dimension,
+                    force=force,
+                    create_kb=create_kb,
+                )
+
+            warnings = list(result.get("warnings") or [])
+            try:
+                await self._save_settings_async(cfg)
+            except Exception as exc:  # noqa: BLE001
+                logger.error(
+                    "[记忆] 知识库已绑定，但插件配置保存失败：%s", exc
+                )
+                warnings.append(f"知识库已绑定，但插件配置写入失败：{exc}")
+
+            try:
+                status = await self._status_payload()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[记忆] 绑定成功但读取状态失败：%s", exc)
+                status = None
+                warnings.append(f"绑定成功，但读取状态失败：{exc}")
+
+            return json_response(
+                {
+                    "ok": True,
+                    "message": result["message"],
+                    "warnings": warnings,
+                    "probe": probe,
+                    "status": status,
+                }
+            )
+        except ValueError as exc:
+            return error_response(str(exc), status_code=400)
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "[记忆] 控制台保存失败：%s\n%s", exc, traceback.format_exc()
+            )
+            return error_response(f"保存失败：{exc}", status_code=500)
+
     def _status_text(self) -> str:
         state = self._load_state()
         processed = state.get("processed") or {}
@@ -763,7 +1675,11 @@ class Main(star.Star):
             convs = self._read_conversations()
         except Exception as exc:
             return f"读不到对话库：{exc}"
-        lines = [f"知识库：{KB_NAME}", f"记录在案的会话：{len(processed)} 个"]
+        lines = [
+            f"知识库：{KB_NAME}",
+            f"记录在案的会话：{len(processed)} 个",
+            f"Embedding 来源：{self._settings()['embedding_mode']}",
+        ]
         pending = 0
         for conv_id, raw in convs:
             try:

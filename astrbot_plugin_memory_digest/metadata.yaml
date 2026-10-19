@@ -1,4 +1,21 @@
 name: astrbot_plugin_memory_digest
-desc: 把对话提炼成 bot 的第一人称长期记忆写进知识库：三层分类（状态/偏好/事件）+ 置信度 + 余弦去重 + 来源校验
+display_name: 记忆层 · 写入侧
+short_desc: 把对话提炼成第一人称长期记忆，并自带 Embedding 控制台。
+desc: |
+  把对话提炼成 bot 的第一人称长期记忆，写进 AstrBot 知识库。
+
+  三层分类（状态 / 偏好 / 事件）+ 置信度 + 余弦去重 + 来源校验。
+  新增插件可视化视图「Embedding 控制台」：可以直接选择云端 OpenAI 兼容
+  embedding API，或填写本机 embedding 服务地址与端口；保存时会创建/更新
+  对应的 AstrBot embedding provider，并绑定到记忆知识库。
+
+  两个插件必须一起装：写入侧 astrbot_plugin_memory_digest + 注入侧
+  astrbot_plugin_memory_recall。
+version: 0.2.0
 author: Lansheen3096
-version: 0.1.0
+repo: https://github.com/Lansheen3096/astrbot-memory-layer
+astrbot_version: ">=4.29.0,<5"
+tags:
+  - memory
+  - knowledge-base
+  - embedding

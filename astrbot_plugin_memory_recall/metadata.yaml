@@ -1,4 +1,15 @@
 name: astrbot_plugin_memory_recall
-desc: 接管记忆注入：状态层全量、偏好/事件层过「地板 + 领先」闸门，事件按半衰期时间递减
+display_name: 记忆层 · 注入侧
+short_desc: 接管记忆注入：状态层全量，偏好/事件层过闸门，事件按时间递减。
+desc: |
+  接管记忆注入：状态层全量、偏好/事件层过「地板 + 领先」闸门，
+  事件按半衰期时间递减。
+
+  与写入侧 astrbot_plugin_memory_digest 配套使用，两个插件的 KB_NAME 必须一致。
+version: 0.2.0
 author: Lansheen3096
-version: 0.1.0
+repo: https://github.com/Lansheen3096/astrbot-memory-layer
+astrbot_version: ">=4.28.0,<5"
+tags:
+  - memory
+  - recall

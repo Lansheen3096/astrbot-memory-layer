@@ -1,0 +1,75 @@
+{
+  "embedding_mode": {
+    "description": "Embedding 来源",
+    "type": "string",
+    "options": ["kb", "cloud", "local"],
+    "labels": ["跟随知识库", "云端 API", "本机服务"],
+    "subtitles": [
+      "不接管，使用知识库当前配置的 embedding provider",
+      "OpenAI 兼容的 /v1/embeddings 接口",
+      "本机 Ollama 或 OpenAI 兼容的 embedding 服务"
+    ],
+    "default": "kb",
+    "hint": "在插件控制台里可视化配置；这里只保存值，真正的创建/绑定由控制台完成。"
+  },
+  "cloud_api_base": {
+    "description": "云端 API Base",
+    "type": "string",
+    "default": "",
+    "hint": "例如 https://api.openai.com/v1；带不带 /v1 都会自动归一。"
+  },
+  "cloud_api_key": {
+    "description": "云端 API Key",
+    "type": "string",
+    "default": "",
+    "secret": true,
+    "hint": "只保存在本机配置里，不会通过控制台接口回显。"
+  },
+  "cloud_model": {
+    "description": "云端 Embedding 模型",
+    "type": "string",
+    "default": "text-embedding-3-small"
+  },
+  "cloud_dimensions": {
+    "description": "云端向量维度",
+    "type": "int",
+    "default": 0,
+    "hint": "0 表示保存时自动探测；探测结果会写回这里。"
+  },
+  "local_host": {
+    "description": "本机服务地址",
+    "type": "string",
+    "default": "127.0.0.1",
+    "hint": "容器部署时注意：127.0.0.1 指的是 AstrBot 容器自身，不是宿主机。"
+  },
+  "local_port": {
+    "description": "本机服务端口",
+    "type": "int",
+    "default": 11434,
+    "slider": {"min": 1, "max": 65535, "step": 1}
+  },
+  "local_api": {
+    "description": "本机接口类型",
+    "type": "string",
+    "options": ["ollama", "openai"],
+    "labels": ["Ollama（/api/embed）", "OpenAI 兼容（/v1/embeddings）"],
+    "default": "ollama"
+  },
+  "local_model": {
+    "description": "本机 Embedding 模型",
+    "type": "string",
+    "default": "bge-m3"
+  },
+  "local_dimensions": {
+    "description": "本机向量维度",
+    "type": "int",
+    "default": 0,
+    "hint": "0 表示保存时自动探测；探测结果会写回这里。"
+  },
+  "embedding_timeout": {
+    "description": "请求超时（秒）",
+    "type": "int",
+    "default": 60,
+    "slider": {"min": 5, "max": 300, "step": 5}
+  }
+}

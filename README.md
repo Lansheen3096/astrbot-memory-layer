@@ -2,18 +2,24 @@
 
 一条**完整的长期记忆管线**：**写入（提炼）→ 注入（召回）→ 复核（人审）**。
 
+> 当前分支：`feature/embedding-console`
+> 在已有 `main` 的记忆层基础上，按 AstrBot 新版插件文档补了插件配置、
+> 元数据与**插件可视化视图「Embedding 控制台」**。
+
 | 组件 | 作用 |
 |---|---|
-| [`astrbot_plugin_memory_digest`](astrbot_plugin_memory_digest) | 把对话提炼成 bot 的第一人称记忆写进知识库 |
+| [`astrbot_plugin_memory_digest`](astrbot_plugin_memory_digest) | 把对话提炼成 bot 的第一人称记忆写进知识库；自带 Embedding 控制台 |
 | [`astrbot_plugin_memory_recall`](astrbot_plugin_memory_recall) | 接管记忆注入：状态层全量、偏好/事件层过闸门、事件按时间递减 |
 | [`tools/`](tools) | 复核台：命令行 + 本地 WebUI，用来清掉待审条目和存疑条目 |
 
-在 AstrBot v4.28.x 上跑出来的，用的是框架自带的知识库（embedding + FAISS）
-和一个 rerank provider。**两个插件必须一起装**，`KB_NAME` 常量也要一致。
+核心提炼/注入逻辑在 AstrBot v4.28.x 上长期跑过；本分支的控制台要求 **>= 4.29**，
+并在 **v4.29.1** 上验证。用的是框架自带的
+知识库（embedding + FAISS）和一个 rerank provider。**两个插件必须一起装**，
+`KB_NAME` 常量也要一致。
 
 > **前置**：这套东西只管「记什么」和「什么时候拿出来」，不管「怎么存」。
 > 存储、向量、检索都交给 AstrBot 的知识库。所以先建一个知识库
-> （WebUI → 知识库），把它的 embedding / rerank provider 配好。
+> （WebUI → 知识库）。embedding 可以在插件控制台里配；rerank 仍要在知识库设置里配。
 
 ---
 
@@ -185,7 +191,110 @@ rerank 分衡量的是「这条记忆是否真的答上了这句话」，它的�
 
 ---
 
-## 3. tools/ —— 复核台
+## 3. 插件控制台 —— Embedding 来源
+
+写入侧插件带一个可视化视图 `views/embedding-console/`。入口在 AstrBot WebUI 的
+插件页 →「记忆层 · 写入侧」详情页 → **Embedding 控制台**。
+
+它解决的是「配 embedding 要改 AstrBot 全局配置 / 记不住 provider 名字」这件事。
+控制台里选一种来源，测试连通性，保存时会：
+
+1. 在 AstrBot 里创建或原地更新一个固定 ID 的 embedding provider
+   （`memory_layer_embedding`）；
+2. 把记忆知识库（`KB_NAME`，默认「长期记忆」）的 `embedding_provider_id`
+   指向它；
+3. 重新初始化知识库的向量库，并用一条测试文本回读向量，确认维度一致；
+4. 保存插件配置 `data/config/astrbot_plugin_memory_digest_config.json`。
+
+### 三种来源
+
+```
+跟随知识库   不改任何绑定，记忆层直接用知识库当前的 embedding provider。
+云端 API     OpenAI 兼容的 /v1/embeddings：填 API Base、API Key、模型。
+             维度留 0 会自动探测。
+本机服务     填监听地址 + 端口，接口类型二选一：
+             · Ollama         → POST {base}/api/embed
+             · OpenAI 兼容    → POST {base}/v1/embeddings
+             适合 Ollama / TEI / vLLM / LM Studio / llama.cpp 等本机服务。
+```
+
+维度不用手算：点「测试连接」会真的发一条 `memory layer connectivity test`，
+把返回向量的长度显示出来；保存时以实际探测值为准。
+
+### 安全闸门（重要）
+
+知识库里的旧向量和新 embedding 必须在同一个向量空间，否则不会报错、只会
+**静默检索错乱**。所以控制台在写绑定之前会检查：
+
+- **维度不一致 → 直接拒绝。** 例：现有索引 1024 维，新服务返回 768 维。
+  请新建知识库，或清空旧条目后再切换。
+- **模型名不一致 → 默认拒绝**，需要勾选「强制切换（同维度）」。
+  不同模型即使都是 1024 维，向量空间也不一样。
+- **知识库不存在** → 默认自动创建；如果 AstrBot 里有可用的 rerank provider，
+  会一并挂上，否则提示你补一个（注入侧没有 rerank 时只会注入状态层）。
+
+API Key 只写入本机配置，`/status` 接口只返回 `api_key_set` 和末四位掩码，
+不回显明文；控制台保存时留空表示保持原 Key。
+
+### 容器部署的地址坑
+
+`127.0.0.1` 在 AstrBot 容器里指的是**容器自己**，不是宿主机。本机 embedding 服务
+跑在宿主机上时，填 Docker 网桥地址（本机是 `172.19.0.1`）或
+`host.docker.internal`。控制台里也写了这条提示。
+
+### 权限边界
+
+控制台接口走 AstrBot Dashboard 的插件鉴权，只有已登录的管理员能用。它按设计可以
+向任意填写的地址发测试请求（包括内网/本机端口），所以 **6185 面板不要直接暴露公网**；
+要远程管理就走 Tailscale / 反代加认证。
+
+### 后端接口
+
+| 方法 | 路由 | 作用 |
+|---|---|---|
+| GET | `/<plugin>/status` | 知识库、provider、条目数、待整理会话、当前设置 |
+| POST | `/<plugin>/test` | 只探测端点，不写配置、不改绑定 |
+| POST | `/<plugin>/save` | 保存设置，创建/更新 provider 并绑定知识库 |
+
+视图通过 `window.AstrBotPluginView` bridge 调用，路由注册用
+`context.register_web_api()`，请求/响应走 `astrbot.api.web` 的
+`request` / `json_response` / `error_response` —— 都是插件开发文档里的新接口。
+
+### 配置项
+
+`_conf_schema.json` 里保存了同一组值（`embedding_mode`、`cloud_*`、`local_*`、
+`embedding_timeout`），所以在插件配置页也能改；控制台只是更好用的入口。
+`embedding_mode = kb` 时控制台不碰知识库绑定。
+
+### 自测
+
+`tools/` 里有两个自测脚本，都在 AstrBot 容器里跑、不碰线上配置：
+
+```bash
+# 用假 embedding 服务验证探测、维度/模型闸门、自动建库
+docker run --rm \
+  -v "$PWD/astrbot_plugin_memory_digest":/plugin:ro \
+  -v "$PWD/tools":/tools:ro \
+  soulter/astrbot:latest python /tools/selftest_console.py
+
+# 用框架自己的加载函数验证 metadata / _conf_schema / i18n / views / 路由
+# （需要 AstrBot >= 4.29 的代码；4.28 镜像只有 pages/，会失败）
+docker run --rm \
+  -v "$PWD/astrbot_plugin_memory_digest":/plugin:ro \
+  -v "$PWD/tools":/tools:ro \
+  -e PLUGIN_DIR=/plugin \
+  <AstrBot-4.29-image> python /tools/selftest_plugin_docs.py
+```
+
+### 进度文件迁移
+
+旧版本把进度写在 `data/memory_digest_state.json`。新版本按文档要求放到
+`data/plugin_data/astrbot_plugin_memory_digest/state.json`；第一次加载时
+如果新文件不存在、旧文件存在，会自动复制过去，不会重扫历史。
+
+---
+
+## 4. tools/ —— 复核台
 
 **没有它，前面两个插件会留一个永远清不掉的队列。**
 `memory_digest` 写库时把新条目标成 `status="new"`，`memory_recall` 见到就打 0.5 折；
@@ -276,17 +385,29 @@ docker run --rm -v ~/astrbot/data:/AstrBot/data -v "$PWD":/kb:ro \
 
 ```bash
 git clone https://github.com/Lansheen3096/astrbot-memory-layer
-cp -r astrbot-memory-layer/astrbot_plugin_* <AstrBot>/data/plugins/
+cd astrbot-memory-layer
+git switch feature/embedding-console      # 控制台在这个分支
+cp -r astrbot_plugin_* <AstrBot>/data/plugins/
 docker compose restart astrbot
 ```
 
-要在 WebUI 里建好知识库（默认名 `长期记忆`，两个插件的 `KB_NAME` 常量要对得上），
-并给它配好 embedding + rerank provider。
+AstrBot >= 4.29（`views/`、`register_web_api`、`astrbot.api.web`）。装好后：
+
+1. 在 WebUI 里建好知识库（默认名 `长期记忆`，两个插件的 `KB_NAME` 常量要对得上）。
+2. 打开「记忆层 · 写入侧」→「Embedding 控制台」，选云端或本机，测试、保存。
+3. 给知识库配一个 rerank provider（控制台只管 embedding，不管 rerank）。
+
+如果知识库不存在，控制台默认会自动创建；也可以在保存前取消勾选
+「知识库不存在时自动创建」，自己先建好。
 
 ## 已知依赖与坑
 
 - **rerank provider 是硬依赖。** 没有它，`recall` 每轮只注入状态层（会打
-  `rerank provider 不可用`），偏好/事件层全部拿不到。
+  `rerank provider 不可用`），偏好/事件层全部拿不到。控制台不会替你配 rerank。
+- **切换 embedding 前先看维度。** 维度不同会被控制台直接拒绝；同维度换模型
+  需要勾选「强制切换」，否则旧记忆会检索异常。最稳妥的做法是新建一个知识库再切。
+- **控制台会写 AstrBot 全局配置。** 保存时会创建/更新 `memory_layer_embedding`
+  这个 provider。之后卸载插件，provider 不会自动删除，需要到 WebUI 提供商页手动清理。
 - **知识库条目没有「编辑」接口。** 框架的 WebUI API 只有 POST / DELETE。
   要改一条已写入的记忆，正确做法是走 `vec_db.delete(chunk_id)` +
   `vec_db.insert(new_text, metadata, id=chunk_id)` 双写 ——
