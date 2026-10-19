@@ -46,7 +46,7 @@ async def main() -> None:
     expect(metadata.version == "0.2.0", f"版本不对：{metadata.version}")
     expect(bool(metadata.display_name), "缺少 display_name")
     expect(bool(metadata.short_desc), "缺少 short_desc")
-    expect(metadata.astrbot_version == ">=4.29.0,<5", "astrbot_version 不对")
+    expect(metadata.astrbot_version == ">=4.28.0,<5", "astrbot_version 不对")
     expect(bool(metadata.repo), "缺少 repo")
 
     # 2) _conf_schema.json + AstrBotConfig 默认值

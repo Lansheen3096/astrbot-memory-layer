@@ -14,7 +14,7 @@ desc: |
 version: 0.2.0
 author: Lansheen3096
 repo: https://github.com/Lansheen3096/astrbot-memory-layer
-astrbot_version: ">=4.29.0,<5"
+astrbot_version: ">=4.28.0,<5"
 tags:
   - memory
   - knowledge-base

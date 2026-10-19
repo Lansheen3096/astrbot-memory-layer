@@ -12,8 +12,8 @@
 | [`astrbot_plugin_memory_recall`](astrbot_plugin_memory_recall) | 接管记忆注入：状态层全量、偏好/事件层过闸门、事件按时间递减 |
 | [`tools/`](tools) | 复核台：命令行 + 本地 WebUI，用来清掉待审条目和存疑条目 |
 
-核心提炼/注入逻辑在 AstrBot v4.28.x 上长期跑过；本分支的控制台要求 **>= 4.29**，
-并在 **v4.29.1** 上验证。用的是框架自带的
+核心提炼/注入逻辑在 AstrBot v4.28.x 上长期跑过；控制台要求 **>= 4.29**，
+并在 **v4.29.1** 上验证（4.28 上插件照常加载，只是没有控制台视图）。用的是框架自带的
 知识库（embedding + FAISS）和一个 rerank provider。**两个插件必须一起装**，
 `KB_NAME` 常量也要一致。
 
@@ -391,7 +391,8 @@ cp -r astrbot_plugin_* <AstrBot>/data/plugins/
 docker compose restart astrbot
 ```
 
-AstrBot >= 4.29（`views/`、`register_web_api`、`astrbot.api.web`）。装好后：
+控制台需要 AstrBot >= 4.29（`views/`、`register_web_api`、`astrbot.api.web`）；
+4.28 上核心提炼/注入仍可用，只是没有控制台。装好后：
 
 1. 在 WebUI 里建好知识库（默认名 `长期记忆`，两个插件的 `KB_NAME` 常量要对得上）。
 2. 打开「记忆层 · 写入侧」→「Embedding 控制台」，选云端或本机，测试、保存。
