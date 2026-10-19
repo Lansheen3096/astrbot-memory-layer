@@ -14,7 +14,7 @@ desc: |
   本插件负责读库并注入。两个插件的 `kb_name` 配置必须一致。
 author: Lansheen3096
 version: 0.2.0
-repo: https://github.com/Lansheen3096/astrbot-memory-layer
+repo: https://github.com/Lansheen3096/astrbot_plugin_memory_recall
 astrbot_version: ">=4.28.2"
 tags:
   - 记忆

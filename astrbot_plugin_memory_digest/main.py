@@ -45,7 +45,16 @@ from astrbot.core.utils.astrbot_path import (
     get_astrbot_plugin_data_path,
 )
 
+try:  # AstrBot >= 4.29: 插件可视化视图 / 插件 Web API
+    from astrbot.api.web import error_response, json_response, request
+
+    WEB_API_AVAILABLE = True
+except Exception:  # pragma: no cover - 老版本只是没有控制台入口
+    WEB_API_AVAILABLE = False
+    error_response = json_response = request = None
+
 PLUGIN_NAME = "astrbot_plugin_memory_digest"
+PLUGIN_VERSION = "0.2.0"
 
 DATA_DIR = Path(get_astrbot_data_path())
 DB_PATH = DATA_DIR / "data_v4.db"
@@ -323,6 +332,48 @@ class Main(star.Star):
         self._daily_task: asyncio.Task | None = None
         self._sync_task: asyncio.Task | None = None
         self._embedding_lock = asyncio.Lock()
+        self._register_web_apis()
+
+    def _register_web_apis(self) -> None:
+        """注册插件控制台用的后端 API。
+
+        AstrBot >= 4.29 才提供 `astrbot.api.web`。老版本照常跑提炼/注入，
+        只是没有控制台入口（日志里会留一行提示）。
+        """
+        if not WEB_API_AVAILABLE:
+            logger.warning(
+                "[记忆] 当前 AstrBot 没有 astrbot.api.web，Embedding 控制台不可用；"
+                "提炼与注入不受影响。"
+            )
+            return
+        register = getattr(self.context, "register_web_api", None)
+        if not callable(register):
+            logger.warning(
+                "[记忆] context.register_web_api 不可用，跳过控制台 API 注册"
+            )
+            return
+        routes = (
+            (
+                f"/{PLUGIN_NAME}/status",
+                self.api_status,
+                ["GET"],
+                "Memory layer embedding console status",
+            ),
+            (
+                f"/{PLUGIN_NAME}/test",
+                self.api_test_embedding,
+                ["POST"],
+                "Probe an embedding endpoint without saving",
+            ),
+            (
+                f"/{PLUGIN_NAME}/save",
+                self.api_save_embedding,
+                ["POST"],
+                "Save embedding settings and bind the knowledge base",
+            ),
+        )
+        for route, handler, methods, desc in routes:
+            register(route, handler, methods, desc)
 
     # ───────────────────── 定时 ─────────────────────
 
@@ -940,6 +991,113 @@ class Main(star.Star):
         return None
 
     @staticmethod
+    def _mask_secret(value: str) -> str:
+        value = (value or "").strip()
+        if not value:
+            return ""
+        if len(value) <= 4:
+            return "••••"
+        return "••••" + value[-4:]
+
+    def _provider_configs(self) -> list[dict]:
+        manager = getattr(self.context, "provider_manager", None)
+        rows = getattr(manager, "providers_config", None) if manager else None
+        return rows if isinstance(rows, list) else []
+
+    def _managed_provider_config(self) -> dict | None:
+        for item in self._provider_configs():
+            if isinstance(item, dict) and item.get("id") == MANAGED_PROVIDER_ID:
+                return dict(item)
+        return None
+
+    def _public_settings(self, cfg: dict | None = None) -> dict:
+        cfg = cfg or self._settings()
+        existing = self._managed_provider_config() or {}
+        has_key = bool(cfg["cloud_api_key"] or existing.get("embedding_api_key"))
+        return {
+            "embedding_mode": cfg["embedding_mode"],
+            "cloud": {
+                "api_base": cfg["cloud_api_base"],
+                "model": cfg["cloud_model"],
+                "dimensions": cfg["cloud_dimensions"],
+                "api_key_set": has_key,
+                "api_key_hint": self._mask_secret(
+                    cfg["cloud_api_key"] or str(existing.get("embedding_api_key") or "")
+                ),
+            },
+            "local": {
+                "host": cfg["local_host"],
+                "port": cfg["local_port"],
+                "api": cfg["local_api"],
+                "model": cfg["local_model"],
+                "dimensions": cfg["local_dimensions"],
+            },
+            "timeout": cfg["embedding_timeout"],
+        }
+
+    def _merge_payload(self, payload: dict) -> dict:
+        if not isinstance(payload, dict):
+            raise ValueError("请求体必须是 JSON 对象")
+        mode = (
+            str(payload.get("embedding_mode") or payload.get("mode") or "kb")
+            .strip()
+            .lower()
+        )
+        if mode not in EMBEDDING_MODES:
+            raise ValueError("embedding_mode 只能是 kb / cloud / local")
+
+        cfg = self._settings()
+        cfg["embedding_mode"] = mode
+
+        cloud = payload.get("cloud")
+        if isinstance(cloud, dict):
+            if "api_base" in cloud:
+                cfg["cloud_api_base"] = str(cloud.get("api_base") or "").strip()
+            if "model" in cloud:
+                cfg["cloud_model"] = str(cloud.get("model") or "").strip()
+            if "dimensions" in cloud:
+                cfg["cloud_dimensions"] = max(
+                    0, self._to_int(cloud.get("dimensions"), 0)
+                )
+            key = cloud.get("api_key")
+            if isinstance(key, str) and key.strip():
+                cfg["cloud_api_key"] = key.strip()
+
+        local = payload.get("local")
+        if isinstance(local, dict):
+            if "host" in local:
+                cfg["local_host"] = str(local.get("host") or "").strip()
+            if "port" in local:
+                cfg["local_port"] = self._to_int(local.get("port"), cfg["local_port"])
+            if "api" in local:
+                cfg["local_api"] = str(local.get("api") or "").strip().lower()
+            if "model" in local:
+                cfg["local_model"] = str(local.get("model") or "").strip()
+            if "dimensions" in local:
+                cfg["local_dimensions"] = max(
+                    0, self._to_int(local.get("dimensions"), 0)
+                )
+
+        timeout = payload.get("timeout", payload.get("embedding_timeout"))
+        if timeout is not None:
+            cfg["embedding_timeout"] = self._to_int(timeout, cfg["embedding_timeout"])
+
+        cfg = self._normalize_settings(cfg)
+        if mode == "cloud":
+            cfg["cloud_api_base"] = self._validate_http_url(
+                cfg["cloud_api_base"], "云端 API Base"
+            )
+            if not cfg["cloud_model"]:
+                raise ValueError("云端 Embedding 模型不能为空")
+        elif mode == "local":
+            cfg["local_host"], cfg["local_port"] = self._normalize_local_target(
+                cfg["local_host"], cfg["local_port"]
+            )
+            if not cfg["local_model"]:
+                raise ValueError("本机 Embedding 模型不能为空")
+        return cfg
+
+    @staticmethod
     def _validate_http_url(raw: str, field: str) -> str:
         raw = (raw or "").strip()
         if not raw:
@@ -1168,6 +1326,30 @@ class Main(star.Star):
             if proxy:
                 provider["proxy"] = proxy
         return provider
+
+    def _provider_rows(self, kind: str) -> list[dict]:
+        rows: list[dict] = []
+        for item in self._provider_configs():
+            if not isinstance(item, dict):
+                continue
+            ptype = str(item.get("type") or "")
+            pkind = str(item.get("provider_type") or "")
+            matched = ptype.endswith(f"_{kind}") or pkind == kind
+            if kind == "embedding":
+                matched = matched or ptype.endswith("embedding")
+            if not matched:
+                continue
+            rows.append(
+                {
+                    "id": item.get("id") or "",
+                    "type": ptype,
+                    "model": item.get("embedding_model") or item.get("model") or "",
+                    "base": item.get("embedding_api_base")
+                    or item.get("api_base")
+                    or "",
+                }
+            )
+        return rows
 
     def _first_rerank_id(self) -> str | None:
         manager = getattr(self.context, "provider_manager", None)
@@ -1432,6 +1614,194 @@ class Main(star.Star):
         except Exception as exc:  # noqa: BLE001
             logger.error("[记忆] 按配置应用 embedding 失败：%s", exc)
             logger.error(traceback.format_exc())
+
+    async def _kb_snapshot(self) -> dict:
+        snapshot: dict = {
+            "name": self.kb_name,
+            "exists": False,
+            "kb_id": "",
+            "embedding_provider_id": "",
+            "embedding_model": "",
+            "embedding_base": "",
+            "vector_dim": 0,
+            "doc_count": 0,
+            "rerank_provider_id": "",
+            "managed_by_plugin": False,
+        }
+        helper = await self.context.kb_manager.get_kb_by_name(self.kb_name)
+        if helper is None:
+            return snapshot
+
+        snapshot["exists"] = True
+        snapshot["kb_id"] = helper.kb.kb_id
+        snapshot["embedding_provider_id"] = helper.kb.embedding_provider_id or ""
+        snapshot["rerank_provider_id"] = helper.kb.rerank_provider_id or ""
+        snapshot["managed_by_plugin"] = (
+            helper.kb.embedding_provider_id == MANAGED_PROVIDER_ID
+        )
+        try:
+            vec_db = getattr(helper, "vec_db", None)
+            if vec_db is not None:
+                snapshot["doc_count"] = int(await vec_db.count_documents())
+                index = getattr(vec_db.embedding_storage, "index", None)
+                snapshot["vector_dim"] = int(getattr(index, "d", 0) or 0)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[记忆] 读取知识库条目数失败：%s", exc)
+
+        try:
+            ep = await helper.get_ep()
+            snapshot["embedding_model"] = str(
+                getattr(ep, "model", "")
+                or (getattr(ep, "provider_config", {}) or {}).get("embedding_model")
+                or ""
+            )
+            snapshot["embedding_base"] = str(
+                (getattr(ep, "provider_config", {}) or {}).get("embedding_api_base")
+                or getattr(ep, "base_url", "")
+                or ""
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[记忆] 读取知识库 embedding provider 失败：%s", exc)
+        return snapshot
+
+    def _digest_snapshot(self) -> dict:
+        state = self._load_state()
+        processed = state.get("processed") or {}
+        pending = 0
+        try:
+            for conv_id, raw in self._read_conversations():
+                try:
+                    total = len(json.loads(raw))
+                except Exception:
+                    continue
+                if int(processed.get(conv_id) or 0) < total:
+                    pending += 1
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[记忆] 读取会话进度失败：%s", exc)
+        return {
+            "processed_conversations": len(processed),
+            "pending_conversations": pending,
+            "state_file": str(STATE_PATH),
+        }
+
+    async def _status_payload(self) -> dict:
+        return {
+            "plugin": {"name": PLUGIN_NAME, "version": PLUGIN_VERSION},
+            "config": self._public_settings(),
+            "kb": await self._kb_snapshot(),
+            "providers": {
+                "embedding": self._provider_rows("embedding"),
+                "rerank": self._provider_rows("rerank"),
+            },
+            "digest": self._digest_snapshot(),
+            "web_api": WEB_API_AVAILABLE,
+        }
+
+    async def api_status(self):
+        """GET /<plugin>/status：控制台首屏需要的全部运行状态。"""
+        try:
+            return json_response(await self._status_payload())
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "[记忆] 控制台状态读取失败：%s\n%s", exc, traceback.format_exc()
+            )
+            return error_response(f"读取状态失败：{exc}", status_code=500)
+
+    async def api_test_embedding(self):
+        """POST /<plugin>/test：只探测，不保存、不改知识库。"""
+        try:
+            payload = await request.json(default={})
+            cfg = self._merge_payload(payload)
+            if cfg["embedding_mode"] == "kb":
+                return json_response(
+                    {
+                        "mode": "kb",
+                        "message": "当前是「跟随知识库」模式，不需要测试自定义端点。",
+                        "kb": await self._kb_snapshot(),
+                    }
+                )
+            probe = await self._probe_embedding(cfg)
+            declared = (
+                cfg["cloud_dimensions"]
+                if cfg["embedding_mode"] == "cloud"
+                else cfg["local_dimensions"]
+            )
+            warnings = []
+            if declared and declared != probe["dimension"]:
+                warnings.append(
+                    f"填写的是 {declared} 维，实际探测到 {probe['dimension']} 维；"
+                    "保存时会以实际探测值为准。"
+                )
+            return json_response({**probe, "warnings": warnings})
+        except ValueError as exc:
+            return error_response(str(exc), status_code=400)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("[记忆] 控制台测试失败：%s\n%s", exc, traceback.format_exc())
+            return error_response(f"测试失败：{exc}", status_code=500)
+
+    async def api_save_embedding(self):
+        """POST /<plugin>/save：保存设置，必要时创建/更新 provider 并绑定知识库。"""
+        try:
+            payload = await request.json(default={})
+            cfg = self._merge_payload(payload)
+            if cfg["embedding_mode"] == "kb":
+                await self._save_settings_async(cfg)
+                return json_response(
+                    {
+                        "ok": True,
+                        "message": "已切换为「跟随知识库」，没有修改知识库绑定。",
+                        "status": await self._status_payload(),
+                    }
+                )
+
+            probe = await self._probe_embedding(cfg)
+            dimension = int(probe["dimension"])
+            cfg[
+                "cloud_dimensions"
+                if cfg["embedding_mode"] == "cloud"
+                else "local_dimensions"
+            ] = dimension
+            provider_cfg = self._build_provider_config(cfg, dimension)
+
+            force = bool(payload.get("force"))
+            create_kb = bool(payload.get("create_kb", True))
+            async with self._embedding_lock:
+                result = await self._apply_embedding(
+                    cfg,
+                    provider_cfg,
+                    dimension,
+                    force=force,
+                    create_kb=create_kb,
+                )
+
+            warnings = list(result.get("warnings") or [])
+            try:
+                await self._save_settings_async(cfg)
+            except Exception as exc:  # noqa: BLE001
+                logger.error("[记忆] 知识库已绑定，但插件配置保存失败：%s", exc)
+                warnings.append(f"知识库已绑定，但插件配置写入失败：{exc}")
+
+            try:
+                status = await self._status_payload()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[记忆] 绑定成功但读取状态失败：%s", exc)
+                status = None
+                warnings.append(f"绑定成功，但读取状态失败：{exc}")
+
+            return json_response(
+                {
+                    "ok": True,
+                    "message": result["message"],
+                    "warnings": warnings,
+                    "probe": probe,
+                    "status": status,
+                }
+            )
+        except ValueError as exc:
+            return error_response(str(exc), status_code=400)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("[记忆] 控制台保存失败：%s\n%s", exc, traceback.format_exc())
+            return error_response(f"保存失败：{exc}", status_code=500)
 
     def _status_text(self) -> str:
         state = self._load_state()

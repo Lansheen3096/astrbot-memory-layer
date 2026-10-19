@@ -177,6 +177,9 @@ class FakeContext:
     def get_config(self, umo=None):  # noqa: ARG002
         return self.config
 
+    def register_web_api(self, *_args, **_kwargs):
+        return None
+
 
 def load_plugin():
     spec = importlib.util.spec_from_file_location("memory_digest_selftest", PLUGIN_MAIN)

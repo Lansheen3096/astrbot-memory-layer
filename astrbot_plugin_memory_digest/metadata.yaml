@@ -18,7 +18,7 @@ desc: |
   两个插件的 `kb_name` 配置必须一致，少装一个链路就不完整。
 author: Lansheen3096
 version: 0.2.0
-repo: https://github.com/Lansheen3096/astrbot-memory-layer
+repo: https://github.com/Lansheen3096/astrbot_plugin_memory_digest
 astrbot_version: ">=4.28.2"
 tags:
   - 记忆
