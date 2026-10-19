@@ -87,7 +87,11 @@ def clean_query(raw: str) -> str:
     return body.strip()
 
 
-def _decay(event_date: str | None) -> float:
+def _decay(
+    event_date: str | None,
+    halflife_days: float = HALFLIFE_DAYS,
+    decay_floor: float = DECAY_FLOOR,
+) -> float:
     if not event_date:
         return 1.0
     try:
@@ -96,7 +100,7 @@ def _decay(event_date: str | None) -> float:
         return 1.0
     if days <= 0:
         return 1.0
-    return max(DECAY_FLOOR, 0.5 ** (days / HALFLIFE_DAYS))
+    return max(decay_floor, 0.5 ** (days / halflife_days))
 
 
 def _norm_meta(md) -> dict:
@@ -119,6 +123,21 @@ class Main(star.Star):
             if isinstance(trace, bool)
             else str(trace).strip().lower() in {"1", "true", "yes", "on"}
         )
+        # 闸门与衰减参数：默认值与旧版硬编码一致，用户不动配置时行为不变
+        self.floor = self._cfg_num("floor", FLOOR)
+        self.lead = self._cfg_num("lead", LEAD)
+        self.state_max = self._cfg_num("state_max", STATE_MAX, int)
+        self.recall_max = self._cfg_num("recall_max", RECALL_MAX, int)
+        self.halflife_days = self._cfg_num("halflife_days", HALFLIFE_DAYS)
+        self.decay_floor = self._cfg_num("decay_floor", DECAY_FLOOR)
+        self.new_discount = self._cfg_num("new_discount", NEW_DISCOUNT)
+
+    def _cfg_num(self, key, default, cast=float):
+        try:
+            return cast(self.config.get(key, default))
+        except (TypeError, ValueError):
+            logger.warning("[recall] 配置项 %s 不是有效数字，用默认值 %s", key, default)
+            return default
 
     @filter.on_llm_request()
     async def recall(self, event: AstrMessageEvent, *args, **kwargs) -> None:
@@ -167,7 +186,7 @@ class Main(star.Star):
             return
 
         # ── 状态层：全量，不过闸 ──
-        states = [it for it in items if it["kind"] == "state"][:STATE_MAX]
+        states = [it for it in items if it["kind"] == "state"][: self.state_max]
 
         # ── 偏好 / 事件：rerank 打分后过闸 ──
         pool = [it for it in items if it["kind"] in ("preference", "event")]
@@ -186,20 +205,24 @@ class Main(star.Star):
                         it = dict(pool[r.index])
                         s = float(r.relevance_score)
                         if it["kind"] == "event":
-                            s *= _decay(it["event_date"])
+                            s *= _decay(
+                                it["event_date"], self.halflife_days, self.decay_floor
+                            )
                         if it["status"] == "new":
-                            s *= NEW_DISCOUNT
+                            s *= self.new_discount
                         it["score"] = s
                         scored.append(it)
                 scored.sort(key=lambda x: x["score"], reverse=True)
                 if scored:
                     top1 = scored[0]["score"]
                     top2 = scored[1]["score"] if len(scored) > 1 else 0.0
-                    passed = top1 >= FLOOR and top1 >= LEAD * top2
+                    passed = top1 >= self.floor and top1 >= self.lead * top2
                     if passed:
                         # 逐条也要过地板 —— 否则 top1 勉强过闸时会把 0.02 的噪声一起带进去
                         recalled = [
-                            it for it in scored[:RECALL_MAX] if it["score"] >= FLOOR
+                            it
+                            for it in scored[: self.recall_max]
+                            if it["score"] >= self.floor
                         ]
 
         parts = []

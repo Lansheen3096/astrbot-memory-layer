@@ -20,5 +20,63 @@
     "type": "bool",
     "default": true,
     "hint": "每轮往日志写一行 top1 / top2 / 是否过闸 / 注入了哪些 sid。排查闸门时打开；嫌日志多可以关掉。"
+  },
+  "_gate_section": {
+    "description": "=== 检索闸门 ===",
+    "type": "text",
+    "invisible": true
+  },
+  "floor": {
+    "description": "相似度地板",
+    "type": "float",
+    "default": 0.05,
+    "slider": { "min": 0.0, "max": 0.5, "step": 0.005 },
+    "hint": "rerank 分数低于这个值一律不注入。实测不相关的噪声在 0.001~0.03；调低更宽松，调高更严格。"
+  },
+  "lead": {
+    "description": "领先倍数",
+    "type": "float",
+    "default": 2.0,
+    "slider": { "min": 1.0, "max": 5.0, "step": 0.1 },
+    "hint": "最高分必须至少是第二名的这么多倍才注入，避免『一堆都不相关、只是有一个略高』。"
+  },
+  "state_max": {
+    "description": "状态层最多注入几条",
+    "type": "int",
+    "default": 40,
+    "slider": { "min": 1, "max": 100, "step": 1 },
+    "hint": "状态层本来是全量注入，这个值只是保险上限。"
+  },
+  "recall_max": {
+    "description": "偏好 + 事件最多注入几条",
+    "type": "int",
+    "default": 3,
+    "slider": { "min": 1, "max": 10, "step": 1 }
+  },
+  "_decay_section": {
+    "description": "=== 事件衰减 ===",
+    "type": "text",
+    "invisible": true
+  },
+  "halflife_days": {
+    "description": "事件半衰期（天）",
+    "type": "float",
+    "default": 30.0,
+    "slider": { "min": 1, "max": 365, "step": 1 },
+    "hint": "事件类记忆每过这么多天，权重减半。"
+  },
+  "decay_floor": {
+    "description": "衰减下限",
+    "type": "float",
+    "default": 0.35,
+    "slider": { "min": 0.0, "max": 1.0, "step": 0.05 },
+    "hint": "再怎么久，权重也不会被压到这个值以下。"
+  },
+  "new_discount": {
+    "description": "待审条目降权",
+    "type": "float",
+    "default": 0.5,
+    "slider": { "min": 0.0, "max": 1.0, "step": 0.05 },
+    "hint": "status=new（还没人工复核）的记忆，打分时乘这个系数。设为 1 表示不降权。"
   }
 }
