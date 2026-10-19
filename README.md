@@ -239,8 +239,9 @@ API Key 只写入本机配置，`/status` 接口只返回 `api_key_set` 和末�
 ### 容器部署的地址坑
 
 `127.0.0.1` 在 AstrBot 容器里指的是**容器自己**，不是宿主机。本机 embedding 服务
-跑在宿主机上时，填 Docker 网桥地址（本机是 `172.19.0.1`）或
-`host.docker.internal`。控制台里也写了这条提示。
+跑在宿主机上时，填 `host.docker.internal`；如果 Docker 不支持这个主机名，
+用 `ip route` 查网桥地址（Linux 上通常是 `172.17.0.1` 或你自定义的网桥网关）。
+控制台里也写了这条提示。
 
 ### 权限边界
 

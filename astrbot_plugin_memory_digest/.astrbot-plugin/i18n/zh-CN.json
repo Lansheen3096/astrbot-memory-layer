@@ -96,7 +96,7 @@
       "test_ok": "连接正常：{model}，维度 {dim}，耗时 {ms} ms。",
       "save_ok": "已保存并应用：{message}",
       "error_prefix": "失败：{message}",
-      "local_hint": "容器部署时，127.0.0.1 是 AstrBot 容器自身。宿主机服务请填宿主机的 Docker 网桥地址（例如 172.19.0.1）或 host.docker.internal。",
+      "local_hint": "容器部署时，127.0.0.1 是 AstrBot 容器自身。宿主机服务请填 host.docker.internal；不支持时用 ip route 查 Docker 网桥地址。",
       "advanced": "高级",
       "api_key_note": "Key 只写入本机 AstrBot 配置，不会通过接口回显。",
       "kb_bound": "已绑定 {provider}",

@@ -1,4 +1,54 @@
+# ── Python ─────────────────────────────────────────────
 __pycache__/
-*.pyc
+*.py[cod]
+*.pyd
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# ── 密钥 / 本机配置（绝不发布）────────────────────────
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+secrets.json
+credentials.json
+auth.json
+token
+tokens.json
+*_config.json
+config.local.*
+*.local.json
+
+# ── AstrBot 运行数据 / 向量库 / 日志 ───────────────────
+data/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+*.faiss
+*.log
+
+# ── 备份 / 临时文件 / 脱敏对照 diff ───────────────────
+*.bak
+*.backup
+*.orig
+*.rej
 *.pre-*
+*.tmp
+*.diff
+*.patch
+.tmp-*/
+tmp/
+
+# ── 编辑器 / 系统 ──────────────────────────────────────
+.vscode/
+.idea/
 .DS_Store

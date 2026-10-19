@@ -96,7 +96,7 @@
       "test_ok": "Connection OK: {model}, dimension {dim}, {ms} ms.",
       "save_ok": "Saved and applied: {message}",
       "error_prefix": "Failed: {message}",
-      "local_hint": "In Docker, 127.0.0.1 is the AstrBot container itself. For a host service, use the Docker bridge address (e.g. 172.19.0.1) or host.docker.internal.",
+      "local_hint": "In Docker, 127.0.0.1 is the AstrBot container itself. For a host service, use host.docker.internal; if that name is unavailable, check the Docker bridge address with ip route.",
       "advanced": "Advanced",
       "api_key_note": "The key is written only to the local AstrBot config and is never echoed by the API.",
       "kb_bound": "Bound to {provider}",

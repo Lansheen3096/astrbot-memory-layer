@@ -221,8 +221,10 @@ async def main() -> None:
             "local target 127.0.0.1",
         )
         expect_value(
-            plugin.Main._normalize_local_target("http://172.19.0.1:11434", 1)
-            == ("172.19.0.1", 11434),
+            plugin.Main._normalize_local_target(
+                "http://host.docker.internal:11434", 1
+            )
+            == ("host.docker.internal", 11434),
             "local target URL 形式应解析出 host/port",
         )
         expect_value(
