@@ -17,7 +17,7 @@ desc: |
   **和 recall 的关系**：写入侧负责记什么，注入侧负责什么时候拿出来。
   两个插件的 `kb_name` 配置必须一致，少装一个链路就不完整。
 author: Lansheen3096
-version: 0.2.0
+version: 0.2.1
 repo: https://github.com/Lansheen3096/astrbot_plugin_memory_digest
 astrbot_version: ">=4.28.2"
 views:

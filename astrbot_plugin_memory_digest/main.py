@@ -39,6 +39,7 @@ import aiohttp
 
 from astrbot.api import logger, star
 from astrbot.api.event import AstrMessageEvent, filter
+from astrbot.api.event.filter import EventMessageType
 from astrbot.core.utils.astrbot_path import (
     get_astrbot_data_path,
     get_astrbot_knowledge_base_path,
@@ -62,6 +63,9 @@ KB_ROOT = Path(get_astrbot_knowledge_base_path())
 PLUGIN_DATA_DIR = Path(get_astrbot_plugin_data_path()) / PLUGIN_NAME
 STATE_PATH = PLUGIN_DATA_DIR / "state.json"
 LEGACY_STATE_PATH = DATA_DIR / "memory_digest_state.json"
+# 可选兜底：marija_life 会记录每个会话的最后发言时间，存在就借来判活跃；
+# 不存在（别人的部署）就只看本插件收到的事件。
+LIFE_STATE = DATA_DIR / "marija_life_state.json"
 KB_NAME = "长期记忆"  # ★ 必须和 astrbot_plugin_memory_recall 里的一致
 
 # 配置页保存后会热重载插件，加载时按这组设置创建/更新 provider 并绑定知识库。
@@ -96,8 +100,11 @@ SPLIT_RE = re.compile(r"[。！？!?\n]+")
 
 # 每天几点自动整理（容器时区 = Asia/Shanghai）。按你自己的作息挑一个不常聊天的时段 ——
 # 整理要跑一次 LLM 调用，落在这个点上会占掉一个模型请求。
-DAILY_HOUR = 5
+DAILY_HOUR = 2  # 每天几点自动整理（容器时区）
 DAILY_MINUTE = 0
+NEW_CONV_DELAY = 10 * 60  # 整理完 10 分钟后开一个新对话
+DEFER_STEP = 60 * 60  # 到点时还在聊 → 整体顺延 1 小时
+ACTIVE_WINDOW = 10 * 60  # 10 分钟内说过话算「正在聊」
 
 MAX_CHARS_PER_RUN = 12000
 DUP_THRESHOLD = 0.85  # 余弦相似度超过这个就算重复，丢掉
@@ -331,6 +338,7 @@ class Main(star.Star):
         self.kb_name = str(self.config.get("kb_name") or KB_NAME)
         self._daily_task: asyncio.Task | None = None
         self._sync_task: asyncio.Task | None = None
+        self._last_msg: dict[str, float] = {}
         self._embedding_lock = asyncio.Lock()
         self._register_web_apis()
 
@@ -403,6 +411,60 @@ class Main(star.Star):
         if not (self._sync_task and not self._sync_task.done()):
             self._sync_task = asyncio.create_task(self._sync_embedding_from_config())
 
+    # ───────────────────── 活跃度 ─────────────────────
+
+    @filter.event_message_type(EventMessageType.PRIVATE_MESSAGE)
+    async def _note_activity_private(self, event: AstrMessageEvent) -> None:
+        self._last_msg[event.unified_msg_origin] = time.time()
+
+    @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
+    async def _note_activity_group(self, event: AstrMessageEvent) -> None:
+        self._last_msg[event.unified_msg_origin] = time.time()
+
+    def _life_state(self) -> dict:
+        try:
+            d = json.loads(LIFE_STATE.read_text(encoding="utf-8"))
+            return d if isinstance(d, dict) else {}
+        except Exception:
+            return {}
+
+    def _last_activity(self) -> float:
+        if self._last_msg:
+            return max(self._last_msg.values())
+        return max(
+            (float(v.get("last_msg") or 0) for v in self._life_state().values()),
+            default=0.0,
+        )
+
+    def _active(self) -> bool:
+        last = self._last_activity()
+        return bool(last) and (time.time() - last) < ACTIVE_WINDOW
+
+    def _target_umos(self) -> list[str]:
+        """只取当前这一个会话。"""
+        if self._last_msg:
+            return [max(self._last_msg, key=lambda u: self._last_msg[u])]
+        life = self._life_state()
+        if not life:
+            return []
+        return [max(life.items(), key=lambda kv: float(kv[1].get("last_msg") or 0))[0]]
+
+    async def _new_conversations(self) -> int:
+        """只给当前会话开一个新对话（旧的留在库里给下一轮整理）。"""
+        mgr = self.context.conversation_manager
+        n = 0
+        for umo in self._target_umos():
+            try:
+                cid = await mgr.get_curr_conversation_id(umo)
+                if not cid:
+                    continue
+                await mgr.new_conversation(umo)
+                n += 1
+                logger.info("[记忆] 已开新对话：%s", umo[:36])
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[记忆] 开新对话失败 %s: %s", umo[:24], exc)
+        return n
+
     async def _daily_loop(self) -> None:
         while True:
             now = datetime.datetime.now()
@@ -418,11 +480,27 @@ class Main(star.Star):
                 delay / 60,
             )
             await asyncio.sleep(delay)
+
+            # 到点时还在说话 → 整套（整理 + 开新对话）往后挪一小时，直到他安静
+            while self._active():
+                logger.info(
+                    "[记忆] 他还在说话，整理与开新对话顺延 %d 分钟", DEFER_STEP // 60
+                )
+                await asyncio.sleep(DEFER_STEP)
+
             try:
                 result = await self._run_digest()
                 logger.info("[记忆] 自动整理完成：%s", result.replace("\n", " / "))
             except Exception:
                 logger.error("[记忆] 自动整理失败\n%s", traceback.format_exc())
+
+            # 整理完 10 分钟开新对话；这 10 分钟里他又开口，同样顺延一小时
+            await asyncio.sleep(NEW_CONV_DELAY)
+            while self._active():
+                logger.info("[记忆] 他还在说话，开新对话顺延 %d 分钟", DEFER_STEP // 60)
+                await asyncio.sleep(DEFER_STEP)
+            n = await self._new_conversations()
+            logger.info("[记忆] 开新对话：%d 个会话", n)
 
     # ───────────────────── 状态 ─────────────────────
 
