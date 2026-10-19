@@ -34,6 +34,16 @@
         </div>
       </header>
 
+      <nav class="view-tabs" role="tablist">
+        <button type="button" class="view-tab is-active" data-tab="embedding">
+          Embedding
+        </button>
+        <button type="button" class="view-tab" data-tab="review" id="tab-review">
+          记忆审批
+        </button>
+      </nav>
+
+      <div class="view-panel" data-panel="embedding">
       <section class="card status-card">
         <div class="card-head">
           <h2 data-i18n="status_title">运行状态</h2>
@@ -248,6 +258,65 @@
         </div>
         <pre id="log" class="log" aria-live="polite"></pre>
       </section>
+      </div>
+
+      <div class="view-panel" data-panel="review" hidden>
+        <section class="card">
+          <div class="card-head">
+            <h2>记忆审批</h2>
+            <span id="rv-badge" class="badge">—</span>
+          </div>
+          <div class="stat-grid">
+            <div class="stat">
+              <span class="stat-label">条目总数</span>
+              <strong id="rv-total" class="stat-value">—</strong>
+            </div>
+            <div class="stat">
+              <span class="stat-label">待审</span>
+              <strong id="rv-pending" class="stat-value">—</strong>
+            </div>
+            <div class="stat">
+              <span class="stat-label">新增</span>
+              <strong id="rv-new" class="stat-value">—</strong>
+            </div>
+            <div class="stat">
+              <span class="stat-label">存疑</span>
+              <strong id="rv-suspect" class="stat-value">—</strong>
+            </div>
+            <div class="stat">
+              <span class="stat-label">已通过</span>
+              <strong id="rv-ok" class="stat-value">—</strong>
+            </div>
+          </div>
+          <p class="hint">
+            「通过 / 存疑」只改状态；「删除」会同时清理文档、全文索引和向量索引，不可撤销。
+          </p>
+          <div class="segmented" role="tablist" id="rv-filter">
+            <button type="button" class="seg is-active" data-filter="pending">待审</button>
+            <button type="button" class="seg" data-filter="all">全部</button>
+            <button type="button" class="seg" data-filter="suspect">存疑</button>
+            <button type="button" class="seg" data-filter="ok">已通过</button>
+          </div>
+          <div class="review-list" id="rv-list">
+            <p class="hint">正在读取……</p>
+          </div>
+          <div class="actions review-actions">
+            <span id="rv-selection" class="hint">未选择</span>
+            <button id="rv-clear" class="ghost" type="button">清空选择</button>
+            <button id="rv-apply" class="primary" type="button" disabled>应用</button>
+          </div>
+        </section>
+
+        <section class="card" id="rv-disabled-card" hidden>
+          <div class="card-head">
+            <h2>注入侧未安装</h2>
+          </div>
+          <p class="hint warn-text">
+            没检测到 <code>astrbot_plugin_memory_recall</code>。记忆能照常写入，但不会注入到对话里；
+            审批页签在这种状态下不可用。装好 recall 并重载后刷新本页即可。
+          </p>
+        </section>
+      </div>
     </main>
 
     <script type="module" src="./app.js"></script>

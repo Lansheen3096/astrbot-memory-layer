@@ -496,3 +496,191 @@ button:disabled {
     width: 100%;
   }
 }
+
+/* ───────────────────── 视图页签 ───────────────────── */
+
+.view-tabs {
+  display: flex;
+  gap: 6px;
+  padding: 5px;
+  margin: 0 0 18px;
+  background: var(--bg-soft);
+  border: 1px solid var(--card-border);
+  border-radius: 999px;
+  width: fit-content;
+}
+
+.view-tab {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--text-soft);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 8px 18px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease;
+}
+
+.view-tab:hover {
+  color: var(--text);
+}
+
+.view-tab.is-active {
+  background: var(--card);
+  color: var(--text);
+  box-shadow: 0 1px 4px rgba(24, 34, 47, 0.12);
+}
+
+.view-tab.is-disabled {
+  color: var(--text-faint);
+  opacity: 0.45;
+}
+
+/* ───────────────────── 记忆审批 ───────────────────── */
+
+.review-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 14px 0;
+  max-height: 520px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.review-row {
+  border: 1px solid var(--card-border);
+  border-radius: 12px;
+  padding: 12px 14px;
+  background: var(--bg-soft);
+}
+
+.review-row-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+
+.review-sid {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.review-meta {
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+.chip {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.chip-new {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.chip-ok {
+  background: var(--ok-soft);
+  color: var(--ok);
+}
+
+.chip-suspect {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.review-text {
+  margin: 0 0 10px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.review-row-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.review-btn {
+  appearance: none;
+  border: 1px solid var(--card-border);
+  background: var(--card);
+  color: var(--text-soft);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 5px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.review-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.review-btn.is-picked {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent-strong);
+}
+
+.review-btn.is-danger:hover {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.review-btn.is-danger.is-picked {
+  background: var(--danger-soft);
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.review-actions {
+  justify-content: flex-end;
+  align-items: center;
+  gap: 10px;
+}
+
+#rv-selection {
+  margin-right: auto;
+}
+
+@media (max-width: 720px) {
+  .view-tabs {
+    width: 100%;
+  }
+
+  .view-tab {
+    flex: 1;
+  }
+
+  .review-actions {
+    flex-direction: column-reverse;
+    align-items: stretch;
+  }
+
+  #rv-selection {
+    margin-right: 0;
+    text-align: center;
+  }
+}

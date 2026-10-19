@@ -371,6 +371,18 @@ class Main(star.Star):
                 ["POST"],
                 "Save embedding settings and bind the knowledge base",
             ),
+            (
+                f"/{PLUGIN_NAME}/review/list",
+                self.api_review_list,
+                ["GET"],
+                "List memory entries for review",
+            ),
+            (
+                f"/{PLUGIN_NAME}/review/apply",
+                self.api_review_apply,
+                ["POST"],
+                "Apply review decisions",
+            ),
         )
         for route, handler, methods, desc in routes:
             register(route, handler, methods, desc)
@@ -1684,6 +1696,19 @@ class Main(star.Star):
             "state_file": str(STATE_PATH),
         }
 
+    def _recall_installed(self) -> bool:
+        """注入侧插件是否已安装并加载。控制台用它决定审批页签是否可用。"""
+        try:
+            if self.context.get_registered_star("astrbot_plugin_memory_recall"):
+                return True
+        except Exception:
+            pass
+        try:
+            plugins_dir = Path(get_astrbot_plugin_data_path()).parent / "plugins"
+            return (plugins_dir / "astrbot_plugin_memory_recall").is_dir()
+        except Exception:
+            return False
+
     async def _status_payload(self) -> dict:
         return {
             "plugin": {"name": PLUGIN_NAME, "version": PLUGIN_VERSION},
@@ -1695,6 +1720,7 @@ class Main(star.Star):
             },
             "digest": self._digest_snapshot(),
             "web_api": WEB_API_AVAILABLE,
+            "recall_installed": self._recall_installed(),
         }
 
     async def api_status(self):
@@ -1860,3 +1886,165 @@ class Main(star.Star):
     async def status_cn(self, event: AstrMessageEvent):
         """看记忆整理的进度。"""
         yield event.plain_result(self._status_text())
+
+    # ───────────────────── 记忆审批（控制台） ─────────────────────
+
+    async def _kb_obj(self):
+        """拿当前配置对应的知识库对象；拿不到返回 None。"""
+        kb_manager = getattr(self.context, "kb_manager", None)
+        if kb_manager is None:
+            return None
+        try:
+            return await kb_manager.get_kb_by_name(self.kb_name)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[记忆] 审批读取知识库失败：%s", exc)
+            return None
+
+    def _kb_doc_db(self, kb_id: str) -> Path:
+        return KB_ROOT / kb_id / "doc.db"
+
+    def _review_rows(self, kb_id: str) -> list[dict]:
+        db_path = self._kb_doc_db(kb_id)
+        if not db_path.is_file():
+            return []
+        con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=15)
+        try:
+            rows = []
+            for doc_id, text, metadata, created_at in con.execute(
+                "select doc_id, text, metadata, created_at from documents"
+            ):
+                try:
+                    meta = json.loads(metadata or "{}")
+                except Exception:
+                    meta = {}
+                rows.append(
+                    {
+                        "doc_id": doc_id,
+                        "sid": meta.get("sid") or "?",
+                        "text": text or "",
+                        "kind": meta.get("kind") or "event",
+                        "status": meta.get("status"),
+                        "suspect": meta.get("suspect"),
+                        "event_date": meta.get("event_date"),
+                        "created_at": created_at,
+                        "meta": meta,
+                    }
+                )
+            rows.sort(key=lambda r: str(r.get("created_at") or ""), reverse=True)
+            return rows
+        finally:
+            con.close()
+
+    async def api_review_list(self):
+        """GET /<plugin>/review/list：列出知识库里的记忆条目与待审状态。"""
+        try:
+            kb = await self._kb_obj()
+            if kb is None:
+                return error_response(
+                    f"找不到知识库「{self.kb_name}」，请先在 WebUI 创建。",
+                    status_code=404,
+                )
+            kb_id = kb.kb.kb_id
+            rows = self._review_rows(kb_id)
+            counts = {
+                "total": len(rows),
+                "pending": sum(1 for r in rows if r["status"] != "ok" or r["suspect"]),
+                "new": sum(1 for r in rows if r["status"] == "new"),
+                "suspect": sum(1 for r in rows if r["suspect"]),
+                "ok": sum(1 for r in rows if r["status"] == "ok"),
+            }
+            for row in rows:
+                row.pop("meta", None)
+            return json_response(
+                {
+                    "kb": {"id": kb_id, "name": self.kb_name},
+                    "counts": counts,
+                    "rows": rows,
+                }
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.error("[记忆] 审批列表读取失败：%s\n%s", exc, traceback.format_exc())
+            return error_response(f"读取审批列表失败：{exc}", status_code=500)
+
+    async def api_review_apply(self):
+        """POST /<plugin>/review/apply：应用一批 keep / suspect / unsuspect / delete。"""
+        try:
+            payload = await request.json(default={})
+            plan = payload.get("plan") or {}
+            if not isinstance(plan, dict):
+                return error_response("plan 必须是对象", status_code=400)
+
+            kb = await self._kb_obj()
+            if kb is None:
+                return error_response(
+                    f"找不到知识库「{self.kb_name}」", status_code=404
+                )
+            kb_id = kb.kb.kb_id
+            rows = {r["sid"]: r for r in self._review_rows(kb_id)}
+
+            order = ("delete", "keep", "suspect", "unsuspect")
+            seen: set[str] = set()
+            todo: dict[str, list[dict]] = {op: [] for op in order}
+            unknown: list[str] = []
+            for op in order:
+                for raw in plan.get(op) or []:
+                    sid = str(raw).strip()
+                    if not sid or sid in seen:
+                        continue
+                    if sid not in rows:
+                        unknown.append(sid)
+                        continue
+                    seen.add(sid)
+                    todo[op].append(rows[sid])
+
+            # 状态类：只改 metadata，不动向量索引
+            changes: list[tuple[dict, dict]] = []
+            for row in todo["keep"]:
+                changes.append((row, {"status": "ok", "suspect": False}))
+            for row in todo["suspect"]:
+                changes.append(
+                    (row, {"status": row["status"] or "new", "suspect": True})
+                )
+            for row in todo["unsuspect"]:
+                changes.append(
+                    (row, {"status": row["status"] or "new", "suspect": False})
+                )
+
+            if changes:
+                con = sqlite3.connect(str(self._kb_doc_db(kb_id)), timeout=30)
+                try:
+                    for row, patch_meta in changes:
+                        meta = dict(row["meta"])
+                        meta.update(patch_meta)
+                        con.execute(
+                            "update documents set metadata=? where doc_id=?",
+                            (json.dumps(meta, ensure_ascii=False), row["doc_id"]),
+                        )
+                    con.commit()
+                finally:
+                    con.close()
+
+            # 删除必须走框架 API，三处（documents / FTS / faiss）一起清
+            for row in todo["delete"]:
+                await kb.delete_document(row["doc_id"])
+
+            results = {
+                "keep": len(todo["keep"]),
+                "suspect": len(todo["suspect"]),
+                "unsuspect": len(todo["unsuspect"]),
+                "delete": len(todo["delete"]),
+            }
+            return json_response(
+                {
+                    "ok": True,
+                    "applied": results,
+                    "unknown": unknown,
+                    "message": (
+                        f"已应用：通过 {results['keep']} / 存疑 {results['suspect']} / "
+                        f"取消存疑 {results['unsuspect']} / 删除 {results['delete']}"
+                    ),
+                }
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.error("[记忆] 审批应用失败：%s\n%s", exc, traceback.format_exc())
+            return error_response(f"应用失败：{exc}", status_code=500)

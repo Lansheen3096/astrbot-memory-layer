@@ -225,6 +225,7 @@ async function loadStatus(showLog = false) {
   state.status = data;
   fillForm(data.config || {});
   renderStatus(data);
+  applyRecallAvailability(data.recall_installed);
   if (showLog) {
     log(t("refresh_ok", "状态已刷新。"));
   }
@@ -299,6 +300,234 @@ async function runSave() {
   }
 }
 
+// ───────────────────── 记忆审批 ─────────────────────
+
+const review = {
+  rows: [],
+  filter: "pending",
+  picks: new Map(),
+  busy: false,
+  installed: false,
+};
+
+function escapeHtml(value) {
+  return String(value ?? "").replace(
+    /[&<>"']/g,
+    (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch],
+  );
+}
+
+function reviewFilteredRows() {
+  if (review.filter === "all") {
+    return review.rows;
+  }
+  if (review.filter === "suspect") {
+    return review.rows.filter((row) => row.suspect);
+  }
+  if (review.filter === "ok") {
+    return review.rows.filter((row) => row.status === "ok" && !row.suspect);
+  }
+  return review.rows.filter((row) => row.status !== "ok" || row.suspect);
+}
+
+function reviewChipClass(row) {
+  if (row.suspect) {
+    return "chip chip-suspect";
+  }
+  if (row.status === "ok") {
+    return "chip chip-ok";
+  }
+  return "chip chip-new";
+}
+
+function reviewChipText(row) {
+  if (row.suspect) {
+    return "存疑";
+  }
+  if (row.status === "ok") {
+    return "已通过";
+  }
+  if (row.status === "new") {
+    return "新增";
+  }
+  return row.status || "未标注";
+}
+
+function renderReviewCounts(counts) {
+  $("rv-total").textContent = counts.total ?? "—";
+  $("rv-pending").textContent = counts.pending ?? "—";
+  $("rv-new").textContent = counts.new ?? "—";
+  $("rv-suspect").textContent = counts.suspect ?? "—";
+  $("rv-ok").textContent = counts.ok ?? "—";
+  $("rv-badge").textContent = counts.pending
+    ? `${counts.pending} 条待审`
+    : "全部处理完";
+}
+
+function renderReviewSelection() {
+  const total = review.picks.size;
+  $("rv-selection").textContent = total ? `已选 ${total} 项` : "未选择";
+  $("rv-apply").disabled = total === 0 || review.busy;
+}
+
+function renderReview() {
+  const list = $("rv-list");
+  const rows = reviewFilteredRows();
+  if (!rows.length) {
+    list.innerHTML = '<p class="hint">这个筛选下没有条目。</p>';
+    renderReviewSelection();
+    return;
+  }
+  const actions = [
+    ["keep", "通过", ""],
+    ["suspect", "存疑", ""],
+    ["unsuspect", "取消存疑", ""],
+    ["delete", "删除", "is-danger"],
+  ];
+  list.innerHTML = rows
+    .map((row) => {
+      const pick = review.picks.get(row.sid) || "";
+      const date = row.event_date || String(row.created_at || "").slice(0, 10);
+      const buttons = actions
+        .map(
+          ([op, label, cls]) =>
+            `<button type="button" class="review-btn ${cls} ${pick === op ? "is-picked" : ""}" data-op="${op}" data-sid="${escapeHtml(row.sid)}">${label}</button>`,
+        )
+        .join("");
+      return `<article class="review-row">
+        <div class="review-row-head">
+          <span class="review-sid">${escapeHtml(row.sid)}</span>
+          <span class="${reviewChipClass(row)}">${reviewChipText(row)}</span>
+          <span class="review-meta">${escapeHtml(row.kind)}${date ? " · " + escapeHtml(date) : ""}</span>
+        </div>
+        <p class="review-text">${escapeHtml(row.text)}</p>
+        <div class="review-row-actions">${buttons}</div>
+      </article>`;
+    })
+    .join("");
+  renderReviewSelection();
+}
+
+async function loadReview(showLog = false) {
+  if (!review.installed) {
+    $("rv-list").innerHTML = "";
+    $("rv-disabled-card").hidden = false;
+    return;
+  }
+  $("rv-disabled-card").hidden = true;
+  try {
+    const data = await bridge.apiGet("review/list");
+    review.rows = Array.isArray(data.rows) ? data.rows : [];
+    renderReviewCounts(data.counts || {});
+    renderReview();
+    if (showLog) {
+      log(`审批列表已刷新：共 ${review.rows.length} 条。`);
+    }
+  } catch (error) {
+    $("rv-list").innerHTML = `<p class="hint warn-text">读取失败：${escapeHtml(error?.message || error)}</p>`;
+  }
+}
+
+function bindReviewEvents() {
+  $("rv-list").addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-op]");
+    if (!button) {
+      return;
+    }
+    const sid = button.dataset.sid;
+    const op = button.dataset.op;
+    if (!sid || !op) {
+      return;
+    }
+    if (review.picks.get(sid) === op) {
+      review.picks.delete(sid);
+    } else {
+      review.picks.set(sid, op);
+    }
+    renderReview();
+  });
+
+  $("rv-filter").addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-filter]");
+    if (!button) {
+      return;
+    }
+    review.filter = button.dataset.filter;
+    $("rv-filter")
+      .querySelectorAll("[data-filter]")
+      .forEach((el) => el.classList.toggle("is-active", el === button));
+    renderReview();
+  });
+
+  $("rv-clear").addEventListener("click", () => {
+    review.picks.clear();
+    renderReview();
+  });
+
+  $("rv-apply").addEventListener("click", async () => {
+    if (review.busy || review.picks.size === 0) {
+      return;
+    }
+    const plan = { keep: [], suspect: [], unsuspect: [], delete: [] };
+    for (const [sid, op] of review.picks) {
+      plan[op].push(sid);
+    }
+    if (
+      plan.delete.length &&
+      !confirm(`本次包含 ${plan.delete.length} 条删除，不可撤销，确认应用？`)
+    ) {
+      return;
+    }
+    review.busy = true;
+    renderReviewSelection();
+    try {
+      const result = await bridge.apiPost("review/apply", { plan });
+      log(result.message || "已应用。");
+      review.picks.clear();
+      await loadReview();
+      try {
+        await loadStatus();
+      } catch (_error) {
+        /* 状态刷新失败不影响审批结果 */
+      }
+    } catch (error) {
+      log(`应用失败：${error?.message || error}`);
+    } finally {
+      review.busy = false;
+      renderReviewSelection();
+    }
+  });
+}
+
+function bindTabs() {
+  document.querySelectorAll(".view-tab").forEach((button) => {
+    button.addEventListener("click", () => {
+      const name = button.dataset.tab;
+      document
+        .querySelectorAll(".view-tab")
+        .forEach((el) => el.classList.toggle("is-active", el === button));
+      document.querySelectorAll(".view-panel").forEach((panel) => {
+        panel.hidden = panel.dataset.panel !== name;
+      });
+      if (name === "review") {
+        loadReview(true);
+      }
+    });
+  });
+}
+
+function applyRecallAvailability(installed) {
+  review.installed = Boolean(installed);
+  const tab = $("tab-review");
+  tab.classList.toggle("is-disabled", !review.installed);
+  tab.title = review.installed
+    ? ""
+    : "没检测到 astrbot_plugin_memory_recall，审批页签不可用";
+  if (!review.installed) {
+    $("rv-disabled-card").hidden = false;
+  }
+}
+
 async function main() {
   if (!bridge) {
     document.body.innerHTML =
@@ -349,6 +578,8 @@ async function main() {
   });
   $("test").addEventListener("click", runTest);
   $("save").addEventListener("click", runSave);
+  bindTabs();
+  bindReviewEvents();
 
   try {
     await loadStatus();

@@ -20,6 +20,8 @@ author: Lansheen3096
 version: 0.2.0
 repo: https://github.com/Lansheen3096/astrbot_plugin_memory_digest
 astrbot_version: ">=4.28.2"
+views:
+  - embedding-console
 tags:
   - 记忆
   - 知识库
