@@ -2,34 +2,58 @@
 
 一条**完整的长期记忆管线**：**写入（提炼）→ 注入（召回）→ 复核（人审）**。
 
-> 当前分支：`feature/embedding-console`
-> 在已有 `main` 的记忆层基础上，按 AstrBot 新版插件文档补了 **metadata、
-> `_conf_schema.json`、标准插件配置页和可视化视图「Embedding 控制台」**。
-> 目录按“每个插件一个目录”组织；digest 的控制台资源放在 `views/` 下。
+> **这个仓库是聚合入口，不再是插件源码仓库。**
+> 两个插件已拆成独立仓库，源码、issue、market 发布都在那边；
+> 本仓库负责三件事：**版本锁定（install.sh + 联合 tag）**、**复核台 `tools/`**、**兼容矩阵**。
 
-| 组件 | 作用 |
-|---|---|
-| [`astrbot_plugin_memory_digest`](astrbot_plugin_memory_digest) | 把对话提炼成 bot 的第一人称记忆写进知识库；配置页 + Embedding 控制台 |
-| [`astrbot_plugin_memory_recall`](astrbot_plugin_memory_recall) | 接管记忆注入：状态层全量、偏好/事件层过闸门、事件按时间递减 |
-| [`tools/`](tools) | 复核台：命令行 + 本地 WebUI，用来清掉待审条目和存疑条目 |
+| 组件 | 仓库 | 版本 | 作用 |
+|---|---|---|---|
+| 写入侧 | [`astrbot_plugin_memory_digest`](https://github.com/Lansheen3096/astrbot_plugin_memory_digest) | `v0.2.2` | 把对话提炼成第一人称记忆写进知识库；配置页 + Embedding 控制台 |
+| 注入侧 | [`astrbot_plugin_memory_recall`](https://github.com/Lansheen3096/astrbot_plugin_memory_recall) | `v0.2.0` | 接管记忆注入：状态层全量、偏好 / 事件层过闸门、事件按时间递减 |
+| 复核台 | 本仓库 `tools/` | — | 命令行 + 本地 WebUI，清掉待审条目和存疑条目 |
 
-核心提炼/注入逻辑在 AstrBot v4.28.x 上长期跑过，并在 **v4.28.2 / v4.29.1** 上验证。
-用的是框架自带的知识库（embedding + FAISS）和一个 rerank provider。
-**两个插件必须一起装**，两个配置页里的 `kb_name` 必须一致。
+两个插件**必须一起装**，两个配置页里的 `kb_name` 必须一致。
 
-> **前置**：这套东西只管「记什么」和「什么时候拿出来」，不管「怎么存」。
-> 存储、向量、检索都交给 AstrBot 的知识库。所以先建一个知识库
-> （WebUI → 知识库）。embedding 可以在写入侧的配置页或控制台里配；
-> rerank 仍要在知识库设置里配。
+## 安装
 
----
+```bash
+# 拉到临时目录，看过再拷进 AstrBot
+git clone --depth 1 --branch memory-layer-v0.1.0 https://github.com/Lansheen3096/astrbot-memory-layer
+cd astrbot-memory-layer && ./install.sh --dest ./plugins
 
-## 为什么要分三层
+# 或者直接拉进插件目录
+./install.sh --dest <AstrBot>/data/plugins
+docker compose restart astrbot
+```
 
-一条平铺的记忆列表，在长会话里只有两种结局：要么全塞进上下文（噪声淹掉信号），
+`install.sh` 按固定 tag 拉两个独立仓库（`--print` 只看版本不落盘）。
+插件在市场里也能单独装，但版本组合以本仓库的联合 tag 为准。
+
+装好后：
+
+1. 在 WebUI 里建好知识库（默认名 `长期记忆`），或在写入侧配置页保留
+   「知识库不存在时自动创建」；两个配置页里的 `kb_name` 必须一致。
+2. 打开「长期记忆（写入侧）」→ 配置，或插件详情页的「Embedding 控制台」，
+   选「跟随知识库 / 云端 API / 本机服务」再保存。插件热重载并探测、创建 / 更新 provider、绑定知识库。
+3. 给知识库配一个 rerank provider（写入侧只管 embedding，不管 rerank）。
+4. 看 AstrBot 日志确认结果，或用 `/记住状态` 看当前来源和已绑定维度。
+
+## 版本兼容矩阵
+
+| 聚合 tag | `memory_digest` | `memory_recall` | AstrBot |
+|---|---|---|---|
+| `memory-layer-v0.1.0` | `v0.2.2` | `v0.2.0` | `>= 4.28.2` |
+
+- 核心提炼 / 注入逻辑在 **v4.28.2 / v4.29.1** 上实测过。
+- 「Embedding 控制台」这个可视化视图需要 **>= 4.29**；4.28.2 上配置页正常，视图不显示。
+- 插件 tag 跟着各自 `metadata.yaml` 的 version 走；聚合 tag 每次发版递增，与插件版本解耦。
+
+## 为什么分三层
+
+一条平铺的记忆列表在长会话里只有两种结局：要么全塞进上下文（噪声淹掉信号），
 要么全靠相似度取 top-N（「他一直住在哪」这种长期事实，会被当天一句无关的话挤掉）。
 
-这套的切法不是按「相似度」，是按**这条记忆加不加日期才成立**：
+这套的切法不按相似度，按**这条记忆加不加日期才成立**：
 
 ```
 state        界定双方「是什么关系」的：称呼 / 关系定位 / 陪伴承诺
@@ -40,298 +64,17 @@ event        具体某天发生的事，或有明确时限的事实 ——「那
              —— 这两层走检索 + 闸门，event 还要按时间递减。
 ```
 
-判据交给模型自己判（`kind` 字段），但**代码做硬校验**：`kind` 不在枚举里就丢掉
-（不是兜底成 `event` —— 模型判不出来说明它根本没读懂这条，留着是噪声）。
+判据交给模型自己判（`kind` 字段），代码做硬校验：不在枚举里就丢掉。
+提炼提示词刻意不写角色身份 —— 换一个 bot 人设不用改插件。
+具体流水线、闸门阈值、时间锚校验都在写入侧和注入侧的 README 里。
 
 ---
 
-## 1. astrbot_plugin_memory_digest —— 写入侧
-
-### 流水线
-
-```
-读 conversations 表 → 渲染成带时间锚的文本 → 交给 LLM 按 DIGEST_SYSTEM 提炼
-  → 逐行解析 JSONL（时间锚 / kind / confidence 三项硬校验）
-  → bge-m3 余弦去重（对库里已有的 + 对本批内部的，阈值 0.85）
-  → 来源校验（闸门①）→ 写进知识库
-```
-
-### 几个关键设计
-
-**① 进度按「会话 → 已处理消息数」记，只处理新增部分。**
-状态文件在 `data/memory_digest_state.json`。不用每次重扫全库。
-
-**② 独立 session_id 调模型**，不污染主对话的上下文。
-
-**③ 时间锚只能照抄，不能推算。**
-每条记忆前面带 `[YYYY-MM-DD HH:MM]`。这个时间来自上游写在 user 消息里的
-`<system_reminder>` —— 模型只负责**从给定的锚里原样抄一个**，抄了不在本批对话里的
-时间就整条丢掉（`bad_anchor`）。模型很爱自己编日期，这一条拦掉的是最常见的一类假记忆。
-
-> 时间锚是**可选依赖**。本仓库的 [`astrbot-reply-rhythm`](https://github.com/Lansheen3096/astrbot-reply-rhythm)
-> 里的 `pacer` 就负责把「收到消息的那一刻」写进 user 消息。没有它也能跑，
-> 只是条目不带日期，`event` 层的时间衰减也就无从算起。
-
-**④ 来源校验（闸门①）—— 拦「模型编的记忆」。**
-写库之后，拿条目正文去和「它声称来源那一轮用户说过的话」算句余弦；低于阈值就打
-`metadata.suspect = 1`，注入侧一律不放行。
-
-阈值是实测校准的，不是拍的：
-
-```
-真来源轮   0.573 ~ 0.856
-合成的编造句 0.543 ~ 0.629
-```
-
-两条分布**有重叠**，所以这一闸只拦「明显对不上」的。语言上确实出现在那一轮、
-但其实是模型自己的叙述被当成事实那类，它拦不住 —— 那类靠
-`status="new"` 标记待人眼复核（注入时会降权 0.5）。
-
-**⑤ 硬过滤词表**（`BLOCK_WORDS`）。
-提示词里写「不许记账号、报错、配置项」，模型会选择性忽略；代码过滤不会。
-命中即不写。
-
-**⑥ 提炼提示词刻意不写角色身份。**
-`DIGEST_SYSTEM` 只描述任务（提炼哪三类、`kind` 怎么判、输出什么格式），
-不提任何具体角色的设定与来历 —— 那部分属于你的部署，用你自己的 system prompt 去管。
-换一个 bot 人设不用改这个插件。
-
-**⑦ 人称一律用【字段】，不用代词。**
-两个插件在文件顶部声明**同一对**常量，取值必须一致：
-
-```
-USER_REF = "[用户]"    用户
-SELF_REF = "我"        助手自己
-```
-
-对话记录的说话人标签、写进库里的记忆正文、检索时归一后的查询 —— 三处用的是同一套字面量。
-没有性别，也没有「你 / 他 / 她到底指谁」的歧义，模型不用做任何人称翻译。
-
-代词方案（写「他/她」）在这里是走不通的：标签上并列写可以，但归一是要**参与检索的字面量**，
-库里的正文写的是「他…」或「她…」中的一个，查询里塞并列写法两头都不像。换成固定字段之后
-这个矛盾直接消失 —— 两边天然是同一个字符串。
-
-⚠️ **迁库注意**：换人称字段等于换了一套字面量。库里已有的条目如果是用「他/我」这类写法
-存的，改了字段之后它们就检索不回来了 —— 要么继续保持原来那套写法，要么清库重跑一次提炼。
-
-### 指令
-
-```
-/记住        手动跑一次提炼
-/记住状态    看进度（处理到哪了、库里有多少条）
-```
-
-另有每天 05:00 的自动整理（`DAILY_HOUR` / `DAILY_MINUTE`）。
-
----
-
-## 2. astrbot_plugin_memory_recall —— 注入侧
-
-### 为什么接管框架自带的注入
-
-框架自带那条链是 `dense 50 + sparse 50 → RRF → rerank → top N` 一坨平铺，
-做不到「状态全量 / 偏好过闸 / 事件时间递减」的分层。所以把知识库的
-`kb_names` 置空关掉自带注入，由本插件接管。
-
-`on_llm_request` 的 hook 点在 `build_main_agent()` **之后**，顺序上本来就是最后一道 ——
-所以能拿到最终 prompt，也能把注入块挂上去。
-
-### 闸门判据
-
-```
-地板 FLOOR   top1 ≥ 0.05         实测不相关的噪声区在 0.001 ~ 0.03
-领先 LEAD    top1 ≥ LEAD × top2  避免「一堆都不相关、只是有一个略高」时误放
-```
-
-**为什么不直接用绝对高分（比如 0.75）：**
-20 条真实消息打 48 条真实条目，top1 中位数 0.013、最大 0.29 —— ≥0.75 是 0/20。
-rerank 分衡量的是「这条记忆是否真的答上了这句话」，它的绝对值和直觉不在一个量级上。
-所以判据用**相对领先**，不用绝对高分。
-
-放行之后**逐条还要过一次地板** —— 否则 top1 勉强过闸时，会把 0.02 的噪声一起带进去。
-
-`state` 层不走闸门（它本来就该每轮都在），只用 `STATE_MAX` 兜个底。
-
-### 时间递减
-
-`event` 层的分数乘一个半衰期衰减：`0.5 ** (天数 / HALFLIFE_DAYS)`，
-默认半衰期 30 天，且有 `DECAY_FLOOR` 兜底（不会被压到 0）。
-`preference` 和 `state` **不衰减** —— 它们本来就是「不依赖某天」才被分到这一层的。
-
-### 查询预处理
-
-拿去打分的不是整段 prompt，而是**纯代码清洗**出来的那一句用户输入：
-去括号壳（动作描写）、去尾标点、人称归一、补主语。
-零延迟，实测有效：
-
-```
-相关对 top1   0.29 → 0.84
-相关对 top1   0.12 → 0.60
-```
-
-人称归一是可配置的：消息里对 bot 的称呼（`ADDRESS_WORDS`，默认空）
-先统一换掉再打分 —— 称呼词对检索没有信息量，只会稀释相似度。
-归一的目标是 `USER_REF` / `SELF_REF`，理由和取值见上面第 ⑦ 条。
-
-⚠️ 函数里几处 `re.sub` 的第二个参数有两种，别看混：`""` 是**整块删掉**（它本身就是噪声），
-`" "` 是**换成空格** —— 后者不能删，删了会把左右两个词粘成一个新词，反而污染检索。
-
-### 注入形态
-
-```
-【你们现在的状态｜每轮都给】
-- …（state 层全量）
-
-【这轮可能用得上的回忆】
-- …（过闸的 preference + event）
-```
-
-整块挂在 `req.extra_user_content_parts` 上并 `mark_as_temp()` —— **临时注入，
-不写进历史**，否则下一轮它会被当成用户说过的话再检索一次，越滚越脏。
-总长有 `MAX_CHARS` 上限。
-
----
-
-## 3. Embedding 配置 —— 配置页 + 控制台
-
-写入侧插件提供两个入口，改的是同一组配置：
-
-- **标准插件配置页**：WebUI 插件页 →「长期记忆（写入侧）」→ 配置，字段来自
-  `_conf_schema.json`。保存后 AstrBot 热重载插件并自动应用。
-- **插件可视化视图**：插件详情页 →「Embedding 控制台」，可以测试连接、看当前
-  provider/维度，再保存。需要 AstrBot >= 4.29；4.28.2 上配置页可用，视图不显示。
-
-目录结构对齐 burst/pacer 的“每个插件一个目录”，digest 额外带控制台资源：
-
-```text
-astrbot_plugin_memory_digest/
-  main.py
-  metadata.yaml
-  _conf_schema.json
-  views/embedding-console/   # 可视化控制台（index.html / app.js / style.css）
-  .astrbot-plugin/i18n/      # 控制台标题和文案
-astrbot_plugin_memory_recall/
-  main.py
-  metadata.yaml
-  _conf_schema.json
-tools/                      # 复核台和自测，属于仓库、不属于单个插件
-```
-
-配置页或控制台保存后，插件在 `on_astrbot_loaded` 里读取设置并：
-
-1. 探测端点，拿到真实向量维度（配置里的维度留 0 时）；
-2. 在 AstrBot 里创建或原地更新固定 ID 的 embedding provider
-   （`memory_layer_embedding`）；
-3. 把 `kb_name` 指向的知识库绑定过去，重新初始化向量库；
-4. 把探测到的维度写回配置，下次加载直接复用。
-
-已经一致就跳过，不会每次启动都重建向量库。
-
-### 控制台怎么用
-
-插件页 →「长期记忆（写入侧）」→「Embedding 控制台」：
-
-右上角可以手动切换深色 / 浅色；初始跟随 AstrBot 当前主题，手动切换在当前页面会话内保持。
-
-```text
-跟随知识库   不修改绑定，直接用知识库当前的 embedding provider
-云端 API     填 API Base / API Key / 模型，点「测试连接」后保存
-本机服务     填监听地址 + 端口，接口类型二选一：
-             · Ollama         → POST {base}/api/embed
-             · OpenAI 兼容    → POST {base}/v1/embeddings
-             适合 Ollama / TEI / vLLM / LM Studio / llama.cpp 等本机服务
-```
-
-控制台后端接口：
-
-| 方法 | 路由 | 作用 |
-|---|---|---|
-| GET | `/<plugin>/status` | 知识库、provider、条目数、待整理会话、当前设置 |
-| POST | `/<plugin>/test` | 只探测端点，不写配置、不改绑定 |
-| POST | `/<plugin>/save` | 保存设置，创建/更新 provider 并绑定知识库 |
-
-视图通过 `window.AstrBotPluginView` bridge 调用，路由注册用
-`context.register_web_api()`，请求/响应走 `astrbot.api.web`。
-
-### 安全闸门（重要）
-
-知识库里的旧向量和新 embedding 必须在同一个向量空间，否则不会报错、只会
-**静默检索错乱**。所以插件在写绑定之前会检查：
-
-- **维度不一致 → 直接拒绝。** 例：现有索引 1024 维，新服务返回 768 维。
-  请新建知识库，或清空旧条目后再切换。
-- **模型名不一致 → 默认拒绝**，需要打开配置页的「允许同维度换模型」
-  （控制台里是「强制切换」复选框）。不同模型即使都是 1024 维，向量空间也不一样。
-- **知识库不存在** → 由「知识库不存在时自动创建」控制；如果 AstrBot 里有可用的
-  rerank provider，会一并挂上，否则提示你补一个（注入侧没有 rerank 时只会注入状态层）。
-
-API Key 在 `_conf_schema.json` 里标了 `secret: true`，配置页会遮罩显示；
-控制台只返回 `api_key_set` 和末四位掩码，不回显明文。留空表示沿用已保存的 Key。
-
-### 容器部署的地址坑
-
-`127.0.0.1` 在 AstrBot 容器里指的是**容器自己**，不是宿主机。本机 embedding 服务
-跑在宿主机上时，填 `host.docker.internal`；如果 Docker 不支持这个主机名，
-用 `ip route` 查网桥地址（Linux 上通常是 `172.17.0.1` 或你自定义的网桥网关）。
-
-### 权限边界
-
-配置页和控制台都走 AstrBot Dashboard 的插件鉴权，只有已登录的管理员能用。插件按设计
-可以向填写的任意地址发请求（包括内网/本机端口），所以 **6185 面板不要直接暴露公网**；
-要远程管理就走 Tailscale / 反代加认证。
-
-### 配置项
-
-| 配置项 | 默认 | 说明 |
-|---|---|---|
-| `kb_name` | `长期记忆` | 必须和注入侧同名配置一致 |
-| `embedding_mode` | `kb` | `kb` / `cloud` / `local` |
-| `cloud_api_base` | 空 | 云端 OpenAI 兼容 Base |
-| `cloud_api_key` | 空 | 云端 Key，`secret` 遮罩 |
-| `cloud_model` | `text-embedding-3-small` | 云端模型 |
-| `cloud_dimensions` | `0` | 0 = 自动探测 |
-| `local_host` | `127.0.0.1` | 本机服务地址 |
-| `local_port` | `11434` | 本机服务端口 |
-| `local_api` | `ollama` | `ollama` / `openai` |
-| `local_model` | `bge-m3` | 本机模型 |
-| `local_dimensions` | `0` | 0 = 自动探测 |
-| `embedding_timeout` | `60` | 请求超时（秒） |
-| `create_kb_if_missing` | `true` | 找不到知识库时自动创建 |
-| `force_rebind` | `false` | 允许同维度换模型 |
-
-### 自测
-
-`tools/` 里两个脚本都在 AstrBot 容器里跑、不碰线上配置：
-
-```bash
-# 用假 embedding 服务验证探测、维度/模型闸门、自动建库、配置页加载应用
-docker run --rm \
-  -v "$PWD/astrbot_plugin_memory_digest":/plugin:ro \
-  -v "$PWD/tools":/tools:ro \
-  soulter/astrbot:latest python /tools/selftest_console.py
-
-# 验证 metadata / _conf_schema / i18n / views / Web API 路由
-# （需要 AstrBot >= 4.29 的代码）
-docker run --rm \
-  -v "$PWD/astrbot_plugin_memory_digest":/plugin:ro \
-  -v "$PWD/tools":/tools:ro \
-  -e PLUGIN_DIR=/plugin \
-  <AstrBot-4.29-image> python /tools/selftest_plugin_docs.py
-```
-
-### 进度文件迁移
-
-旧版本把进度写在 `data/memory_digest_state.json`。新版本按文档要求放到
-`data/plugin_data/astrbot_plugin_memory_digest/state.json`；第一次加载时
-如果新文件不存在、旧文件存在，会自动复制过去，不会重扫历史。
-
----
-
-## 4. tools/ —— 复核台
+## tools/ —— 复核台
 
 **没有它，前面两个插件会留一个永远清不掉的队列。**
-`memory_digest` 写库时把新条目标成 `status="new"`，`memory_recall` 见到就打 0.5 折；
-来源对不上的条目会标 `suspect=1`，`memory_recall` 见到直接不注入。两处都要人过目才能清，
+`memory_digest` 写库时把新条目标成 `status="new"`，`memory_recall` 见到打 0.5 折；
+来源对不上的条目标 `suspect=1`，`memory_recall` 见到直接不注入。两处都要人过目才能清，
 这个工具就是那个「过目」的入口。
 
 跑在**宿主机**上（不是容器里），零第三方依赖，纯 stdlib。
@@ -343,6 +86,7 @@ tools/
   webui.py      本地网页，给 CLI 套一个能点的界面
   selftest.sh   在知识库【副本】上验一遍读改写全流程
   selftest_console.py  embedding 配置自测（假服务，不碰线上）
+  selftest_plugin_docs.py  metadata / schema / i18n / 视图路由自测（需 4.29 代码）
 ```
 
 ### 命令行
@@ -357,7 +101,7 @@ cd tools
 ./review.sh batch  < plan.json    # 一批一次做完，只停起一次容器
 ```
 
-⚠️ **多个 sid 用空格分隔，不是逗号**（每个 sid 是独立的参数）。sid 是 4 位零填充的字符串、
+⚠️ **多个 sid 用空格分隔，不是逗号**（每个 sid 是独立参数）。sid 是 4 位零填充字符串、
 精确匹配 —— `1` 匹配不上 `0001`。
 
 ### 为什么写操作要停容器
@@ -366,7 +110,7 @@ cd tools
 （`vec_db.delete` / `vec_db.insert`）。两边同时写 `index.faiss` 会打架，所以写操作
 = 停容器 → 用同一个镜像起一次性容器改 → 起回来。`review.sh` 挂了 `trap`，异常退出也会把容器起回来。
 
-**一批多种操作要走 `batch`**：逐个跑 `keep`/`delete` 会各停起一次容器（每次约 40 秒），
+**一批多种操作要走 `batch`**：逐个跑 `keep` / `delete` 会各停起一次容器（每次约 40 秒），
 复核一轮下来 bot 反复离线。
 
 ### 网页版
@@ -384,7 +128,7 @@ HOST=0.0.0.0 PORT=8790 python3 webui.py     # ⚠️ 见下
 一次性链接直接在手机上打开。口令每次请求现读 —— 改口令不用重启服务。
 明文 HTTP，只当局域网内措施用。
 
-界面上：顶部两个筛选（待审/存疑 · 全部）+ 刷新 + 一致性检查；每条右边四个按钮
+界面上：顶部两个筛选（待审 / 存疑 · 全部）+ 刷新 + 一致性检查；每条右边四个按钮
 （通过 / 存疑 / 取消存疑 / 删除）；底部「应用」把选中项合成一个 batch 计划提交。
 写入是**异步任务**（返回 `job_id`，页面每 1.5 秒轮询进度）—— 因为一次写入要 30~60 秒，
 写完才返回的话中途刷新就收不到回执，页面报错而库里其实已经改完了。
@@ -415,48 +159,18 @@ docker run --rm -v ~/astrbot/data:/AstrBot/data -v "$PWD":/kb:ro \
 
 ---
 
-## 安装
-
-两个插件已拆成独立仓库，也可以从本仓库分支一起装：
-
-```bash
-# 方式一：两个独立插件仓库
-git clone https://github.com/Lansheen3096/astrbot_plugin_memory_digest
-git clone https://github.com/Lansheen3096/astrbot_plugin_memory_recall
-cp -r astrbot_plugin_memory_* <AstrBot>/data/plugins/
-docker compose restart astrbot
-
-# 方式二：monorepo 分支（含 tools/ 复核台）
-git clone https://github.com/Lansheen3096/astrbot-memory-layer
-cd astrbot-memory-layer
-git switch feature/embedding-console
-cp -r astrbot_plugin_* <AstrBot>/data/plugins/
-docker compose restart astrbot
-```
-
-要求 AstrBot >= 4.28.2。装好后：
-
-1. 在 WebUI 里建好知识库（默认名 `长期记忆`），或在写入侧配置页保留
-   「知识库不存在时自动创建」；两个配置页里的 `kb_name` 必须一致。
-2. 打开「长期记忆（写入侧）」→ 配置，或插件详情页的「Embedding 控制台」，
-   选「跟随知识库 / 云端 API / 本机服务」，保存。插件会热重载并按配置探测、
-   创建/更新 provider、绑定知识库。控制台需要 AstrBot >= 4.29；4.28.2 用配置页。
-3. 给知识库配一个 rerank provider（本插件只管 embedding，不管 rerank）。
-
-保存后看 AstrBot 日志确认结果，或用 `/记住状态` 看当前来源和已绑定维度。
-
 ## 已知依赖与坑
 
 - **rerank provider 是硬依赖。** 没有它，`recall` 每轮只注入状态层（会打
-  `rerank provider 不可用`），偏好/事件层全部拿不到。本插件不会替你配 rerank。
+  `rerank provider 不可用`），偏好 / 事件层全部拿不到。插件不会替你配 rerank。
 - **切换 embedding 前先看维度。** 维度不同会被直接拒绝；同维度换模型
   需要打开配置页的「允许同维度换模型」，否则旧记忆会检索异常。
   最稳妥的做法是新建一个知识库再切。
-- **配置页 / 控制台保存会写 AstrBot 全局配置。** 插件会创建/更新
+- **配置页 / 控制台保存会写 AstrBot 全局配置。** 插件会创建 / 更新
   `memory_layer_embedding` 这个 provider。之后卸载插件，provider 不会自动删除，
   需要到 WebUI 提供商页手动清理。
 - **配置页 / 控制台保存会触发热重载。** 加载时后台探测 endpoint；如果 endpoint
-  不可达，只会打错误日志，不会让插件加载失败，旧绑定保持不变。
+  不可达，只打错误日志，不会让插件加载失败，旧绑定保持不变。
 - **知识库条目没有「编辑」接口。** 框架的 WebUI API 只有 POST / DELETE。
   要改一条已写入的记忆，正确做法是走 `vec_db.delete(chunk_id)` +
   `vec_db.insert(new_text, metadata, id=chunk_id)` 双写 ——
@@ -465,7 +179,9 @@ docker compose restart astrbot
 - **`conversations` 表是只读打开的**（`mode=ro`）。如果上游插件接管了历史写入，
   要确认它写进去的 role 是规整交替的 —— 尾巴上挂着两条连续的 `user`，
   提炼出来的记忆质量会明显变差。
-- 本仓库代码来自一个长期在跑的自用部署，注释里保留了踩坑原因和实测数字，
+- **人称字段是硬约定。** 两个插件的 `USER_REF` / `SELF_REF` 必须一致；
+  库里的旧条目如果是别的写法，切字段之后就检索不回来。
+- 代码来自一个长期在跑的自用部署，注释里保留了踩坑原因和实测数字，
   请当"经验笔记 + 可用代码"看。
 
 ## License

@@ -3,7 +3,7 @@
 
 用法：
     docker run --rm \
-      -v "$PWD/astrbot_plugin_memory_digest":/plugin:ro \
+      -v "$PWD/plugins/astrbot_plugin_memory_digest":/plugin:ro \
       -v "$PWD/tools":/tools:ro \
       soulter/astrbot:latest python /tools/selftest_console.py
 
